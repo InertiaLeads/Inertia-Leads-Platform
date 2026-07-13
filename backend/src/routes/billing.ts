@@ -76,10 +76,10 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
       return res.json({ success: true, message: `Plan changed to ${plan}` });
     }
 
-    // No active subscription — create a new checkout
-    // Skip the trial for users who have already used it (has prior subscription or trial record)
-    const hasUsedTrial = !!(userPlan?.lemon_squeezy_subscription_id || userPlan?.trial_ends_at);
-
+    // No active subscription — create a new checkout.
+    // The app owns the free trial (auto-granted at registration, no card), so Lemon Squeezy must
+    // NEVER grant its own trial: any checkout charges the card immediately. This applies whether the
+    // user is still mid-trial (upgrading early) or their trial has already expired.
     const { data, error } = await createCheckout(storeId, variantId, {
       checkoutData: {
         email: userEmail,
@@ -89,7 +89,7 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
       },
       checkoutOptions: {
         buttonColor: "#6962c4",
-        skipTrial: hasUsedTrial,
+        skipTrial: true,
       },
       productOptions: {
         redirectUrl: `${frontendUrl}/settings`,

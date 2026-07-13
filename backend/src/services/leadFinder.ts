@@ -28,10 +28,44 @@ interface SerperPlace {
   category?: string;
   rating?: number;
   ratingCount?: number;
+  cid?: string; // Google's unique business id — used to dedupe repeated listings across pages
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Call Serper Places with retries. Retries transient failures (network / 429 / 5xx) with a short
+ * backoff; does NOT retry auth errors (401/403) since those won't fix themselves. Throws the last
+ * error if every attempt fails, so callers can distinguish a real failure from a genuine "no results".
+ */
+async function serperPlacesRequest(apiKey: string, q: string, page: number, attempts = 3) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await axios.post(
+        "https://google.serper.dev/places",
+        { q, page },
+        {
+          headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+          timeout: 10000,
+        }
+      );
+    } catch (error) {
+      lastError = error;
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      // Auth/config errors are permanent — don't waste retries on them.
+      if (status === 401 || status === 403) break;
+      if (attempt < attempts) await sleep(500 * attempt); // 500ms, then 1000ms backoff
+    }
+  }
+  throw lastError;
 }
 
 /**
- * Find leads using Serper.dev Google Maps/Places API
+ * Find leads using Serper.dev Google Maps/Places API.
+ * Returns [] ONLY when the provider genuinely returned no matching businesses.
+ * THROWS when the provider fails (after retries) so the caller can surface a real error
+ * instead of a misleading "0 leads found".
  */
 export async function findLeadsByNiche(
   params: LeadFinderParams
@@ -41,32 +75,25 @@ export async function findLeadsByNiche(
   const apiKey = process.env.SERPER_API_KEY;
   if (!apiKey) {
     logger.error("SERPER_API_KEY not set");
-    return [];
+    throw new Error("Lead search is not configured. Please contact support.");
   }
 
+  logger.info({ niche, location, limit }, "Searching for leads");
+
+  const leads: FoundLead[] = [];
+  const seenCids = new Set<string>();
+  let page = 1;
+
   try {
-    logger.info({ niche, location, limit }, "Searching for leads");
-
-    const leads: FoundLead[] = [];
-    let page = 1;
-
     // Serper returns ~10 results per page, so paginate until we hit the limit
     while (leads.length < limit) {
-      const response = await axios.post(
-        "https://google.serper.dev/places",
-        {
-          q: `${niche} in ${location}`,
-          page,
-        },
-        {
-          headers: {
-            "X-API-KEY": apiKey,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
+      const response = await serperPlacesRequest(apiKey, `${niche} in ${location}`, page);
       const places: SerperPlace[] = response.data?.places || [];
+
+      logger.info(
+        { query: `${niche} in ${location}`, page, rawPlacesFromSerper: places.length },
+        "Serper places page"
+      );
 
       if (places.length === 0) break;
 
@@ -76,9 +103,17 @@ export async function findLeadsByNiche(
         const company = place.title?.trim();
         if (!company) continue;
 
-        // Only include if they have a website or phone (useful leads)
-        if (!place.website && !place.phone && !place.phoneNumber) continue;
+        // Skip the same Google business if it appears again (Serper can repeat a listing across pages)
+        if (place.cid) {
+          if (seenCids.has(place.cid)) continue;
+          seenCids.add(place.cid);
+        }
 
+        // Keep every real business (it has a name, and usually an address). Serper frequently
+        // omits phone/website for many listings — very common for US results — so we must NOT drop
+        // contactless places here, or good searches (e.g. "dentists in Chicago") wrongly return 0.
+        // The enrichment step afterwards discovers the website + contact info, and prunes any lead
+        // that stays truly unreachable.
         leads.push({
           name: company,
           company,
@@ -97,28 +132,37 @@ export async function findLeadsByNiche(
 
       // Safety cap: don't exceed 5 API calls per search
       if (page > 5) break;
-    }
 
-    logger.info({ count: leads.length }, "Leads found");
-    return leads;
+      await sleep(300); // small pause between pages to avoid provider throttling
+    }
   } catch (error) {
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
     logger.error(
-      { error: error instanceof Error ? error.message : error },
+      { error: error instanceof Error ? error.message : error, status, niche, location, gathered: leads.length },
       "Error finding leads"
     );
-    return [];
+    // If earlier pages already returned leads, keep them rather than discarding the whole search.
+    if (leads.length > 0) {
+      logger.info({ count: leads.length }, "Leads found (partial — a later page failed)");
+      return leads;
+    }
+    // No leads gathered and the provider failed → surface a real error to the caller.
+    throw new Error("The lead search service is temporarily unavailable. Please try again in a moment.");
   }
+
+  logger.info({ count: leads.length }, "Leads found");
+  return leads;
 }
 
 /**
  * Validate and clean lead data
  */
 export function validateLead(lead: FoundLead): boolean {
-  return (
-    !!lead.company &&
-    lead.company.trim().length > 0 &&
-    !!(lead.email?.includes("@") || lead.website?.startsWith("http") || lead.phone)
-  );
+  // A real business name is enough to accept the lead at find-time. Contact info (email / phone /
+  // website) is filled in during enrichment; leads that remain uncontactable are pruned then.
+  // (Serper often returns businesses without contact fields, so requiring them here would drop
+  // valid leads and make good searches return 0.)
+  return !!lead.company && lead.company.trim().length > 0;
 }
 
 /**

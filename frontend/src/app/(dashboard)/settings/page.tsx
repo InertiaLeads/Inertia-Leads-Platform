@@ -150,6 +150,7 @@ export default function SettingsPage() {
   const [plan, setPlan] = useState("starter");
   const [hasPlan, setHasPlan] = useState(true);
   const [isExpired, setIsExpired] = useState(false);
+  const [isTrialExpired, setIsTrialExpired] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isPastDue, setIsPastDue] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -206,6 +207,7 @@ export default function SettingsPage() {
   const [savedServiceType, setSavedServiceType] = useState("");
   const [serviceTypeSaving, setServiceTypeSaving] = useState(false);
   const [serviceTypeLoading, setServiceTypeLoading] = useState(true);
+  const [billingError, setBillingError] = useState(false);
   const toast = useToast();
 
   const totalInboxes = gmailAccounts.length + smtpAccounts.length;
@@ -265,6 +267,7 @@ export default function SettingsPage() {
         // Cancelled but still has access until period ends
         setHasPlan(true);
         setIsExpired(false);
+        setIsTrialExpired(false);
         setIsCancelling(true);
         setIsPastDue(false);
         setIsPaused(false);
@@ -272,6 +275,7 @@ export default function SettingsPage() {
         // Payment failed — show warning, still has access during grace period
         setHasPlan(true);
         setIsExpired(false);
+        setIsTrialExpired(false);
         setIsCancelling(false);
         setIsPastDue(true);
         setIsPaused(false);
@@ -279,27 +283,43 @@ export default function SettingsPage() {
         // Subscription paused — no access
         setHasPlan(false);
         setIsExpired(false);
+        setIsTrialExpired(false);
         setIsCancelling(false);
         setIsPastDue(false);
         setIsPaused(true);
+      } else if (data.subscriptionStatus === "trialing" && !data.isOnTrial) {
+        // Free trial ended without payment — status stays "trialing" but the trial date has passed.
+        // Show the locked "choose a plan" state (trial-flavored copy).
+        setHasPlan(false);
+        setIsExpired(true);
+        setIsTrialExpired(true);
+        setIsCancelling(false);
+        setIsPastDue(false);
+        setIsPaused(false);
       } else if (data.subscriptionStatus === "expired" || data.subscriptionStatus === "cancelled" || data.subscriptionStatus === "none") {
         // Fully expired, cancelled (period over), or no subscription
         setHasPlan(false);
         setIsExpired(true);
+        setIsTrialExpired(false);
         setIsCancelling(false);
         setIsPastDue(false);
         setIsPaused(false);
       } else {
-        // "trialing" and "active" — show active plan card
+        // "trialing" (active) and "active" — show active plan / trial card
         setHasPlan(true);
         setIsExpired(false);
+        setIsTrialExpired(false);
         setIsCancelling(false);
         setIsPastDue(false);
         setIsPaused(false);
       }
     }).catch(() => {
+      // /stats failed (network / rate-limit 429 / server error). Do NOT fall back to the default
+      // plan state — that would render a misleading "Starter · Active" card. Flag an error so the
+      // billing card shows a retry state instead of fabricated data.
       setServiceType("web_dev");
       setSavedServiceType("web_dev");
+      setBillingError(true);
     }).finally(() => {
       setServiceTypeLoading(false);
     });
@@ -406,6 +426,20 @@ export default function SettingsPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
+    const gmailStatus = params.get("gmail");
+
+    // Backend GET /gmail/callback redirects here with ?gmail=connected|error after connecting.
+    if (gmailStatus === "connected") {
+      fetchAccounts();
+      toast.addToast("Gmail connected successfully!", "success");
+      window.history.replaceState({}, "", "/settings");
+      return;
+    }
+    if (gmailStatus === "error") {
+      toast.addToast("Failed to connect Gmail. Please try again.", "error");
+      window.history.replaceState({}, "", "/settings");
+      return;
+    }
 
     if (code) {
       (async () => {
@@ -783,14 +817,20 @@ export default function SettingsPage() {
               </div>
             ) : (
               (() => {
+                // Inbox completion is proportional to how many of the plan's
+                // inbox slots are connected (e.g. 1/4 = 25%, not "done"), so the
+                // overall % only reaches 100 when every slot is filled — not on
+                // the very first inbox.
+                const inboxFraction = maxInboxes > 0 ? Math.min(1, totalInboxes / maxInboxes) : (totalInboxes > 0 ? 1 : 0);
                 const checks = [
                   { label: "Name", done: !!profileName.trim() },
                   { label: "Address", done: !!profileAddress.trim() },
                   { label: "Avatar", done: !!profileAvatarUrl },
-                  { label: "Inbox", done: totalInboxes > 0 },
+                  { label: `Inbox (${totalInboxes}/${maxInboxes})`, done: maxInboxes > 0 && totalInboxes >= maxInboxes },
                 ];
-                const completed = checks.filter(c => c.done).length;
-                const pct = Math.round((completed / checks.length) * 100);
+                // Name/Address/Avatar are binary; Inbox contributes its fraction.
+                const binaryDone = checks.slice(0, 3).filter(c => c.done).length;
+                const pct = Math.round(((binaryDone + inboxFraction) / checks.length) * 100);
                 return (
                   <div className="flex gap-5">
                     {/* Left: profile info */}
@@ -965,6 +1005,22 @@ export default function SettingsPage() {
                   <div className="flex-1 h-10 rounded-lg bg-gray-200" />
                 </div>
               </div>
+            ) : billingError ? (
+              /* Couldn't load subscription — show a retry, NOT fabricated default plan data */
+              <div className="flex flex-col h-full items-center justify-center text-center py-4">
+                <div className="w-12 h-12 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(239,68,68,0.08)" }}>
+                  <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
+                </div>
+                <p className="text-sm font-semibold text-gray-800">Couldn&apos;t load your plan</p>
+                <p className="text-xs text-gray-400 mt-1 max-w-xs">We couldn&apos;t reach the server (it may be busy). Your plan is safe — this is just a display issue.</p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="mt-4 px-5 py-2 text-xs font-bold rounded-lg text-white transition-all hover:scale-[1.02]"
+                  style={{ background: "linear-gradient(135deg, #3d3580 0%, #6962c4 100%)" }}
+                >
+                  Retry
+                </button>
+              </div>
             ) : !hasPlan && !isExpired && !isPaused ? (
               /* New user - no plan selected */
               <div className="flex flex-col h-full justify-between">
@@ -1022,7 +1078,7 @@ export default function SettingsPage() {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <div className="px-2.5 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider text-red-700 bg-red-50 border border-red-200 flex items-center justify-center leading-none">
-                      Plan Expired
+                      {isTrialExpired ? "Trial Ended" : "Plan Expired"}
                     </div>
                     <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 border border-red-200">
                       <div className="w-2 h-2 rounded-full bg-red-500" />
@@ -1033,15 +1089,15 @@ export default function SettingsPage() {
                   {/* Previous plan info */}
                   <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-100">
                     <div>
-                      <p className="text-[10px] text-gray-400 mb-0.5">Previous plan</p>
+                      <p className="text-[10px] text-gray-400 mb-0.5">{isTrialExpired ? "Trial plan" : "Previous plan"}</p>
                       <span className="text-sm font-bold text-gray-900 capitalize">{plan}</span>
                       <span className="text-xs text-gray-400 ml-1.5">
                         {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}/mo
                       </span>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] text-gray-400">Expired on</p>
-                      <p className="text-xs font-semibold text-red-600">Jun 4, 2026</p>
+                      <p className="text-[10px] text-gray-400">{isTrialExpired ? "Trial ended" : "Expired on"}</p>
+                      <p className="text-xs font-semibold text-red-600">{effectivePeriodEnd ? effectivePeriodEnd.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</p>
                     </div>
                   </div>
 
@@ -1052,8 +1108,8 @@ export default function SettingsPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                       </svg>
                       <div>
-                        <p className="text-[11px] font-bold text-gray-800 mb-1">Your access has been paused</p>
-                        <p className="text-[10px] text-gray-500 leading-relaxed">Lead generation, email campaigns, and AI features are disabled. Renew now to resume where you left off.</p>
+                        <p className="text-[11px] font-bold text-gray-800 mb-1">{isTrialExpired ? "Your free trial has ended" : "Your access has been paused"}</p>
+                        <p className="text-[10px] text-gray-500 leading-relaxed">{isTrialExpired ? "Lead generation, email campaigns, and AI features are locked. Choose a plan to unlock everything and pick up where you left off." : "Lead generation, email campaigns, and AI features are disabled. Renew now to resume where you left off."}</p>
                       </div>
                     </div>
                   </div>
@@ -1084,7 +1140,7 @@ export default function SettingsPage() {
                   className="w-full py-2.5 text-sm font-bold rounded-lg text-white transition-all hover:shadow-lg hover:scale-[1.01] active:scale-[0.99] mt-3"
                   style={{ background: "linear-gradient(135deg, #dc2626 0%, #ef4444 50%, #f87171 100%)" }}
                 >
-                  Renew Plan
+                  {isTrialExpired ? "Choose Your Plan" : "Renew Plan"}
                 </button>
               </div>
             ) : isPaused ? (
@@ -1197,24 +1253,37 @@ export default function SettingsPage() {
                   )}
 
                   {/* Price & dates */}
-                  <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-100">
-                    <div>
-                      <span className="text-2xl font-extrabold text-gray-900">
-                        {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}
-                      </span>
-                      <span className="text-xs text-gray-400 ml-1">per month</span>
+                  {isOnTrial ? (
+                    <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-100">
+                      <div>
+                        <span className="text-2xl font-extrabold text-gray-900">Free Trial</span>
+                        <span className="text-xs text-gray-400 ml-1">Growth features</span>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-400">Days left: <span className="text-amber-600 font-semibold">{trialDaysLeft ?? "—"}</span></p>
+                        <p className="text-[10px] text-gray-400">Then <span className="text-gray-600 font-medium">$79/mo</span> when you choose a plan</p>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-[10px] text-gray-400">Purchased: <span className="text-gray-600 font-medium">{periodStartDate ? new Date(periodStartDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</span></p>
-                      <p className="text-[10px] text-gray-400">{isCancelling ? "Ends" : "Expires"}: <span className={`font-medium ${isCancelling ? "text-orange-600" : "text-gray-600"}`}>{effectivePeriodEnd ? effectivePeriodEnd.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</span></p>
+                  ) : (
+                    <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-100">
+                      <div>
+                        <span className="text-2xl font-extrabold text-gray-900">
+                          {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}
+                        </span>
+                        <span className="text-xs text-gray-400 ml-1">per month</span>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-400">Purchased: <span className="text-gray-600 font-medium">{periodStartDate ? new Date(periodStartDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</span></p>
+                        <p className="text-[10px] text-gray-400">{isCancelling ? "Ends" : "Expires"}: <span className={`font-medium ${isCancelling ? "text-orange-600" : "text-gray-600"}`}>{effectivePeriodEnd ? effectivePeriodEnd.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</span></p>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Limits boxes */}
                   <div className="grid grid-cols-3 gap-2">
                     <div className="rounded-xl p-3 text-center border-2 border-[#e8e6f5]" style={{ background: "rgba(105,98,196,0.06)" }}>
                       <p className="text-lg font-bold" style={{ color: "#3d3580" }}>
-                        {plan === "starter" ? "50" : plan === "growth" ? "100" : "200"}
+                        {isOnTrial ? "20" : plan === "starter" ? "50" : plan === "growth" ? "100" : "200"}
                       </p>
                       <p className="text-[10px] text-gray-500 font-medium mt-0.5">Leads/day</p>
                     </div>
@@ -1226,7 +1295,7 @@ export default function SettingsPage() {
                     </div>
                     <div className="rounded-xl p-3 text-center border-2 border-[#e8e6f5]" style={{ background: "rgba(105,98,196,0.06)" }}>
                       <p className="text-lg font-bold" style={{ color: "#3d3580" }}>
-                        {plan === "starter" ? "50" : plan === "growth" ? "100" : "200"}
+                        {isOnTrial ? "20" : plan === "starter" ? "50" : plan === "growth" ? "100" : "200"}
                       </p>
                       <p className="text-[10px] text-gray-500 font-medium mt-0.5">Emails/day</p>
                     </div>
@@ -1261,6 +1330,18 @@ export default function SettingsPage() {
                       Change Plan
                     </button>
                   </div>
+                ) : isOnTrial ? (
+                  /* Free trial — single upgrade CTA, always enabled. No "cancel" (there's no card/subscription yet). */
+                  <div className="mt-4">
+                    <button
+                      onClick={() => setShowPricingModal(true)}
+                      className="w-full py-2.5 text-sm font-bold rounded-lg text-white transition-all hover:shadow-lg hover:scale-[1.01] active:scale-[0.99]"
+                      style={{ background: "linear-gradient(135deg, #3d3580 0%, #6962c4 50%, #8b7fd4 100%)" }}
+                    >
+                      See Plans — Upgrade Anytime
+                    </button>
+                    <p className="text-[10px] text-gray-400 text-center mt-2">You&apos;re only charged when you choose a plan. Cancel anytime.</p>
+                  </div>
                 ) : (
                   <div className="flex gap-2 mt-4">
                     <button
@@ -1286,7 +1367,7 @@ export default function SettingsPage() {
 
         {/* Pricing Modal */}
         {showPricingModal && (
-          <PricingModal plan={plan} hasPlan={hasPlan} isExpired={isExpired} isPastDue={isPastDue} onClose={() => setShowPricingModal(false)} onToast={toast.addToast} />
+          <PricingModal plan={plan} hasPlan={hasPlan} isExpired={isExpired} isPastDue={isPastDue} isOnTrial={isOnTrial} onClose={() => setShowPricingModal(false)} onToast={toast.addToast} />
         )}
 
         {/* Cancel Plan Modal */}

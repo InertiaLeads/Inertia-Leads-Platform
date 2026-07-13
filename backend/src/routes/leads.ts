@@ -5,7 +5,8 @@ import { autoFindLimiter, enrichLimiter } from "../middleware/rateLimit";
 import supabase from "../services/supabase";
 import { parseCSV } from "../utils/csv";
 import { findLeadsByNiche, formatLeadsForDB } from "../services/leadFinder";
-import { checkLeadFindLimit, incrementLeadsFound, incrementLeadsFoundToday, decrementLeadsFoundToday, checkDailyLeadFindLimit, getMaxEnrichBatchSize, getUserPlan, PLAN_CONFIGS } from "../services/planLimits";
+import { checkLeadFindLimit, incrementLeadsFound, incrementLeadsFoundToday, checkDailyLeadFindLimit, getMaxEnrichBatchSize, getUserPlan, getFeatureAccess, PLAN_CONFIGS } from "../services/planLimits";
+import { enrichLeadsInBackground } from "../services/leadEnrichment";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -57,6 +58,27 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req: Authen
       return;
     }
 
+    // Feature gate: CSV upload is a Growth/Agency feature (unlocked during the trial).
+    // Enforced on the backend too — the frontend gate alone is bypassable by a Starter user.
+    const uploaderPlan = await getUserPlan(req.userId!);
+    if (!getFeatureAccess(uploaderPlan.plan, uploaderPlan.isOnTrial).csvUpload) {
+      res.status(403).json({
+        error: "CSV upload is available on the Growth and Agency plans. Upgrade to upload your own lead lists.",
+      });
+      return;
+    }
+
+    // Skip rows with a blank or malformed email — CSV leads aren't enrichment-rescued, so a row
+    // with no valid email is just a dead, uncontactable lead. Only keep well-formed emails.
+    const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const validLeads = leads.filter((l) => emailRegex.test((l.email || "").trim().toLowerCase()));
+    if (validLeads.length === 0) {
+      res.status(400).json({
+        error: "No rows with a valid email address were found in your CSV. Make sure the 'email' column is filled in.",
+      });
+      return;
+    }
+
     // Check daily lead find limit (uses monotonic counter)
     // If fully used (e.g. 200/200), CSV upload is disabled entirely
     const dailyCheck = await checkDailyLeadFindLimit(req.userId!);
@@ -75,7 +97,7 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req: Authen
     // Leads beyond this cap are dropped — user must re-upload tomorrow (duplicates auto-skipped)
     const config = PLAN_CONFIGS[dailyCheck.plan];
     const maxUpload = config.maxDailyEmails;
-    const cappedLeads = leads.slice(0, maxUpload);
+    const cappedLeads = validLeads.slice(0, maxUpload);
 
     // Split: today's batch (remaining daily slots) and queued (rest up to plan cap)
     const remaining = dailyCheck.remaining;
@@ -138,14 +160,17 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req: Authen
     // Uses batch insert (chunks of 50) for speed. If a batch fails due to
     // a unique constraint (duplicate), falls back to individual inserts for that chunk.
     let actualInsertedToday = 0;
+    const insertedTodayIds: string[] = [];
     if (todayLeads.length > 0) {
       const todayLeadsToInsert = todayLeads.map((lead) => ({
         campaign_id: campaign.id,
         user_id: req.userId,
         name: lead.name || "",
-        email: lead.email || "",
+        email: (lead.email || "").trim(),
         company: lead.company || "",
-        website: lead.website || "",
+        // Normalize website (strip trailing slashes) so it matches the dedup unique index,
+        // consistent with the auto-find path — otherwise "site.com/" vs "site.com" duplicate.
+        website: (lead.website || "").trim().replace(/\/+$/, ""),
         industry: lead.industry || "",
         source_type: "csv",
       }));
@@ -161,11 +186,15 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req: Authen
         if (!batchErr && inserted) {
           // Entire batch succeeded — no duplicates in this chunk
           actualInsertedToday += inserted.length;
+          insertedTodayIds.push(...inserted.map((r: any) => r.id));
         } else {
           // Batch had duplicates — fall back to individual inserts for this chunk only
           for (const lead of batch) {
-            const { error: leadErr } = await supabase.from("leads").insert(lead);
-            if (!leadErr) actualInsertedToday++;
+            const { data: one, error: leadErr } = await supabase.from("leads").insert(lead).select("id").single();
+            if (!leadErr && one) {
+              actualInsertedToday++;
+              insertedTodayIds.push(one.id);
+            }
           }
         }
       }
@@ -184,9 +213,9 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req: Authen
         campaign_id: campaign.id,
         user_id: req.userId,
         name: lead.name || "",
-        email: lead.email || "",
+        email: (lead.email || "").trim(),
         company: lead.company || "",
-        website: lead.website || "",
+        website: (lead.website || "").trim().replace(/\/+$/, ""),
         industry: lead.industry || "",
         source_type: "csv_queued",
       }));
@@ -233,6 +262,13 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req: Authen
         error: "All leads in your CSV already exist in your account. Try a different CSV.",
       });
       return;
+    }
+
+    // Enrich the active (today's) CSV leads in the background — discover website, scrape business
+    // data, and score — same pipeline as auto-find. (CSV leads always have an email, so none are
+    // pruned.) Queued leads are enriched later, when the drip-feed promotes them.
+    if (insertedTodayIds.length > 0) {
+      setImmediate(() => enrichLeadsInBackground(req.userId!, insertedTodayIds));
     }
 
     const skippedFromCsv = leads.length - cappedLeads.length;
@@ -347,22 +383,44 @@ router.post("/auto-find", authMiddleware, autoFindLimiter, async (req: Authentic
       return;
     }
 
-    // Find leads using the lead finder service
-    const foundLeads = await findLeadsByNiche({
-      niche,
-      location,
-      limit: validatedLimit,
-    });
+    // Find leads using the lead finder service.
+    // findLeadsByNiche THROWS on a real provider failure (after retries) and returns [] only when
+    // the search genuinely found nothing — so we can tell "failed" apart from "no results".
+    let foundLeads;
+    try {
+      foundLeads = await findLeadsByNiche({
+        niche,
+        location,
+        limit: validatedLimit,
+      });
+    } catch (findErr) {
+      // Real search failure — mark the source FAILED (not "completed · 0 leads") and tell the user
+      // to retry, instead of silently pretending the search found nothing.
+      await supabase
+        .from("lead_sources")
+        .update({ status: "failed" })
+        .eq("id", source.id);
+      logger.error(
+        { err: findErr instanceof Error ? findErr.message : findErr, niche, location },
+        "Lead search failed"
+      );
+      res.status(503).json({
+        error: findErr instanceof Error ? findErr.message : "Search failed. Please try again.",
+        source_id: source.id,
+        failed: true,
+      });
+      return;
+    }
 
     if (foundLeads.length === 0) {
-      // Update source status to completed even if no leads found
+      // Genuine "no results" — search succeeded but matched nothing. Mark completed and guide the user.
       await supabase
         .from("lead_sources")
         .update({ status: "completed" })
         .eq("id", source.id);
 
       res.json({
-        message: "No leads found for the given criteria",
+        message: `No businesses found for "${niche}" in "${location}". Try a specific city (e.g. "Los Angeles") or a different niche.`,
         source_id: source.id,
         count: 0,
       });
@@ -411,6 +469,7 @@ router.post("/auto-find", authMiddleware, autoFindLimiter, async (req: Authentic
       // Deduplicate within the batch itself (Serper can return duplicates across pages)
       const seenWebsites = new Set<string>();
       const seenCompanyPhone = new Set<string>();
+      const seenCompanyAddress = new Set<string>();
       leadsToInsert = leadsToInsert.filter((lead) => {
         const normalizedWebsite = lead.website?.toLowerCase();
         if (normalizedWebsite) {
@@ -422,13 +481,21 @@ router.post("/auto-find", authMiddleware, autoFindLimiter, async (req: Authentic
           if (seenCompanyPhone.has(key)) return false;
           seenCompanyPhone.add(key);
         }
+        // Dedup by company + address — catches the same business when it has no website/phone yet
+        // (Serper omits contact info for many listings, so website/phone keys can't catch those).
+        const addr = ((lead as any).enriched_data?.address || "").toLowerCase().trim();
+        if (lead.company && addr) {
+          const key = `${lead.company.toLowerCase()}|${addr}`;
+          if (seenCompanyAddress.has(key)) return false;
+          seenCompanyAddress.add(key);
+        }
         return true;
       });
 
-      // Get existing websites and company+phone combos for this user
+      // Get existing websites and company+phone/address combos for this user
       const { data: existingLeads } = await supabase
         .from("leads")
-        .select("website, company, phone")
+        .select("website, company, phone, enriched_data")
         .eq("user_id", req.userId);
 
       if (existingLeads && existingLeads.length > 0) {
@@ -442,6 +509,16 @@ router.post("/auto-find", authMiddleware, autoFindLimiter, async (req: Authentic
             .map((l: any) => `${l.company?.toLowerCase()}|${l.phone?.toLowerCase()}`)
             .filter((v: string) => v !== "|")
         );
+        // company + address of already-saved leads — catches re-adding a business that was found
+        // before as name-only (no website/phone) and later enriched.
+        const existingCompanyAddress = new Set(
+          existingLeads
+            .map((l: any) => {
+              const addr = (l.enriched_data?.address || "").toLowerCase().trim();
+              return l.company && addr ? `${l.company.toLowerCase()}|${addr}` : null;
+            })
+            .filter(Boolean)
+        );
 
         leadsToInsert = leadsToInsert.filter((lead) => {
           // Check website match
@@ -453,6 +530,14 @@ router.post("/auto-find", authMiddleware, autoFindLimiter, async (req: Authentic
           if (lead.company && lead.phone) {
             const key = `${lead.company.toLowerCase()}|${lead.phone.toLowerCase()}`;
             if (existingCompanyPhone.has(key)) {
+              return false;
+            }
+          }
+          // Check company+address match (for name-only leads with no website/phone yet)
+          const addr = ((lead as any).enriched_data?.address || "").toLowerCase().trim();
+          if (lead.company && addr) {
+            const key = `${lead.company.toLowerCase()}|${addr}`;
+            if (existingCompanyAddress.has(key)) {
               return false;
             }
           }
@@ -532,144 +617,8 @@ router.post("/auto-find", authMiddleware, autoFindLimiter, async (req: Authentic
     // This runs after the response is sent so the user doesn't wait
     if (insertedLeads && insertedLeads.length > 0) {
       const leadIdsToScrape = insertedLeads.map((l: any) => l.id);
-      setImmediate(async () => {
-        try {
-          const { scrapeWebsite, generateEnrichmentSummary } = await import("../services/scraper");
-          const { scoreLead } = await import("../services/leadScoring");
-          const { discoverWebsite } = await import("../services/leadFinder");
-          const { data: leadsToScrape } = await supabase
-            .from("leads")
-            .select("id, website, email, phone, company, industry, campaign_id, enriched_data")
-            .in("id", leadIdsToScrape);
-
-          if (!leadsToScrape) return;
-
-          const leadsToDelete: { id: string; campaignId: string }[] = [];
-          const SCRAPE_BATCH = 5;
-          for (let i = 0; i < leadsToScrape.length; i += SCRAPE_BATCH) {
-            const batch = leadsToScrape.slice(i, i + SCRAPE_BATCH);
-            await Promise.all(batch.map(async (lead: any) => {
-              try {
-                let websiteUrl = lead.website;
-
-                // If no website, try to discover one via web search
-                if (!websiteUrl) {
-                  const discovered = await discoverWebsite(lead.company, lead.industry);
-                  if (discovered) {
-                    websiteUrl = discovered;
-                    await supabase.from("leads").update({ website: discovered }).eq("id", lead.id);
-                  }
-                }
-
-                if (!websiteUrl) {
-                  // Still no website — score based on what we know
-                  if (!lead.email && !lead.phone) {
-                    leadsToDelete.push({ id: lead.id, campaignId: lead.campaign_id });
-                  } else {
-                    const score = scoreLead({ company: lead.company });
-                    await supabase.from("leads").update({ score }).eq("id", lead.id);
-                  }
-                  return;
-                }
-                const websiteData = await scrapeWebsite(websiteUrl);
-                if (!websiteData) {
-                  // Scrape failed but lead has contact info — still score it (no website data = high opportunity)
-                  if (lead.email || lead.phone) {
-                    const score = scoreLead({ website: websiteUrl, company: lead.company });
-                    await supabase.from("leads").update({ score }).eq("id", lead.id);
-                  } else {
-                    leadsToDelete.push({ id: lead.id, campaignId: lead.campaign_id });
-                  }
-                  return;
-                }
-
-                const enrichmentSummary = generateEnrichmentSummary(websiteData, lead.company);
-                const score = scoreLead({
-                  website: websiteUrl,
-                  enriched_data: websiteData as any,
-                  company: lead.company,
-                });
-
-                const updateFields: Record<string, any> = {
-                  enriched_data: {
-                    ...websiteData,
-                    ...enrichmentSummary,
-                    // Industry priority: lead.industry (from niche search / CSV) > scraper detection
-                    industry: lead.industry || websiteData.industry || "Unknown",
-                    // Preserve Google rating/reviews from lead finder (not available from scraper)
-                    ...(lead.enriched_data?.googleRating !== undefined ? { googleRating: lead.enriched_data.googleRating } : {}),
-                    ...(lead.enriched_data?.googleReviewCount !== undefined ? { googleReviewCount: lead.enriched_data.googleReviewCount } : {}),
-                    ...(lead.enriched_data?.address ? { address: lead.enriched_data.address } : {}),
-                  },
-                  score,
-                  // Persist detected language from website content
-                  detected_language: websiteData.detectedLanguage || "eng",
-                };
-
-                // Priority 1: Email — if found on website, use it and ignore website phone
-                const foundEmail = websiteData.emails && websiteData.emails.length > 0 ? websiteData.emails[0] : null;
-                if (!lead.email && foundEmail) {
-                  updateFields.email = foundEmail;
-                  updateFields.contact_method = "email";
-                } else if (lead.email) {
-                  // Already has email — keep it
-                  updateFields.contact_method = "email";
-                } else {
-                  // Priority 2: No email anywhere — go for phone
-                  // Only add website phone if Serper didn't already provide one
-                  if (!lead.phone && websiteData.phones && websiteData.phones.length > 0) {
-                    updateFields.phone = websiteData.phones[0];
-                  }
-                  if (lead.phone || updateFields.phone) {
-                    updateFields.contact_method = "call";
-                  } else {
-                    // No email AND no phone — useless lead, mark for deletion
-                    leadsToDelete.push({ id: lead.id, campaignId: lead.campaign_id });
-                    return;
-                  }
-                }
-
-                if (Object.keys(updateFields).length > 0) {
-                  await supabase
-                    .from("leads")
-                    .update(updateFields)
-                    .eq("id", lead.id);
-                }
-              } catch (err) {
-                logger.error({ leadId: lead.id, err }, "Background scrape failed for lead");
-              }
-            }));
-          }
-
-          // Delete useless leads (no email + no phone)
-          if (leadsToDelete.length > 0) {
-            const deleteIds = leadsToDelete.map(l => l.id);
-            await supabase.from("leads").delete().in("id", deleteIds);
-
-            // Update campaign totals with exact count from DB (avoids race conditions)
-            const affectedCampaignIds = [...new Set(leadsToDelete.map(l => l.campaignId))];
-            for (const cId of affectedCampaignIds) {
-              const { count: actualCount } = await supabase
-                .from("leads")
-                .select("*", { count: "exact", head: true })
-                .eq("campaign_id", cId);
-              await supabase
-                .from("campaigns")
-                .update({ total_leads: actualCount ?? 0 })
-                .eq("id", cId);
-            }
-
-            logger.info({ deletedCount: leadsToDelete.length }, "Removed useless leads (no email + no phone)");
-
-            // Decrement daily + monthly counters so remaining slots stay accurate
-            await decrementLeadsFoundToday(req.userId!, leadsToDelete.length);
-          }
-
-          logger.info({ count: leadsToScrape.length, deleted: leadsToDelete.length }, "Background contact scrape completed");
-        } catch (err) {
-          logger.error({ err }, "Background contact scrape failed");
-        }
-      });
+      // Enrich in the background (after the response is sent) so the user doesn't wait.
+      setImmediate(() => enrichLeadsInBackground(req.userId!, leadIdsToScrape));
     }
 
     res.json({

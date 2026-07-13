@@ -1,5 +1,6 @@
 import supabase from "../services/supabase";
 import { checkDailyLeadFindLimit, incrementLeadsFoundToday, incrementLeadsFound } from "../services/planLimits";
+import { enrichLeadsInBackground } from "../services/leadEnrichment";
 import logger from "../utils/logger";
 import crypto from "crypto";
 
@@ -67,6 +68,7 @@ async function processCsvDripFeed() {
         if (canPromote === 0) continue;
 
         let totalPromoted = 0;
+        const promotedIds: string[] = [];
 
         // Promote queued leads across all campaigns for this user
         for (const campaignId of campaignIds) {
@@ -96,6 +98,7 @@ async function processCsvDripFeed() {
             const promoted = ids.length;
             canPromote -= promoted;
             totalPromoted += promoted;
+            promotedIds.push(...ids);
 
             // Update queued_leads count on this campaign
             const { count: remainingQueued } = await supabase
@@ -123,6 +126,8 @@ async function processCsvDripFeed() {
         if (totalPromoted > 0) {
           await incrementLeadsFoundToday(userId, totalPromoted);
           await incrementLeadsFound(userId, totalPromoted);
+          // Enrich the promoted leads (discover website + scrape + score), same as auto-find/upload.
+          setImmediate(() => enrichLeadsInBackground(userId, promotedIds));
         }
       } catch (err) {
         logger.error({ userId, error: err instanceof Error ? err.message : err }, "CSV drip-feed error for user");

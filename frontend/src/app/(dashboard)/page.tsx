@@ -18,6 +18,9 @@ interface Stats {
   avgLeadScore: number;
   callLeads: number;
   sentToday: number;
+  weeklyLeads: number[];
+  weeklyEmails: number[];
+  weeklyLabels: string[];
   dailySendLimit: number;
   plan: string;
   planLabel: string;
@@ -59,7 +62,10 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<Stats>({
     totalLeads: 0, totalCampaigns: 0, emailsSent: 0, totalEmails: 0,
     emailsFailed: 0, repliesReceived: 0, replyRate: "0.0%", avgLeadScore: 0,
-    callLeads: 0, sentToday: 0, dailySendLimit: 0,
+    callLeads: 0, sentToday: 0,
+    weeklyLeads: [0, 0, 0, 0, 0, 0, 0], weeklyEmails: [0, 0, 0, 0, 0, 0, 0],
+    weeklyLabels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Today"],
+    dailySendLimit: 0,
     plan: "starter", planLabel: "Starter", priceMonthly: 39,
     maxDailyEmails: 50, warmupDay: 0, warmupComplete: false, warmupWeek: 0, warmupPaused: false,
     leadsFoundThisMonth: 0, monthlyLeadFindLimit: 100,
@@ -137,9 +143,9 @@ export default function DashboardPage() {
 
   const v = (val: number | string) => loading ? "—" : val;
 
-  // Sparkline data for activity chart (in production, use real historical data)
-  const leadSpark = [12, 18, 25, 20, 35, 42, stats.leadsFoundToday || 50];
-  const emailSpark = [5, 8, 3, 12, 15, 10, stats.sentToday || 0];
+  // Real last-7-days activity from the backend (index 6 = today)
+  const leadSpark = stats.weeklyLeads;
+  const emailSpark = stats.weeklyEmails;
 
   const leadPct = stats.dailyLeadFindLimit > 0 ? Math.round((stats.leadsFoundToday / stats.dailyLeadFindLimit) * 100) : 0;
   const monthPct = stats.monthlyLeadFindLimit > 0 ? Math.round((stats.leadsFoundThisMonth / stats.monthlyLeadFindLimit) * 100) : 0;
@@ -499,8 +505,8 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="flex justify-between mt-4 px-1">
-              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Today"].map((d, i) => (
-                <span key={d} className={`text-[11px] flex-1 text-center font-medium ${i === 6 ? "font-bold text-indigo-600" : "text-gray-400"}`}>{d}</span>
+              {stats.weeklyLabels.map((d, i) => (
+                <span key={i} className={`text-[11px] flex-1 text-center font-medium ${i === 6 ? "font-bold text-indigo-600" : "text-gray-400"}`}>{d}</span>
               ))}
             </div>
           </div>

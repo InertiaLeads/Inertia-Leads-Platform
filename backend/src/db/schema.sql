@@ -333,34 +333,25 @@ create policy "Users can delete their own emails"
   on emails for delete using (auth.uid() = user_id);
 
 -- Gmail Accounts RLS
+-- SELECT-only for the owner. These rows hold OAuth access/refresh tokens; the backend
+-- (service role) manages all writes. Owner writes are not granted so a user can't inject or
+-- tamper with credential rows via the anon key.
 alter table gmail_accounts enable row level security;
 
 create policy "Users can view their own gmail accounts"
   on gmail_accounts for select using (auth.uid() = user_id);
 
-create policy "Users can insert their own gmail accounts"
-  on gmail_accounts for insert with check (auth.uid() = user_id);
-
-create policy "Users can update their own gmail accounts"
-  on gmail_accounts for update using (auth.uid() = user_id);
-
-create policy "Users can delete their own gmail accounts"
-  on gmail_accounts for delete using (auth.uid() = user_id);
-
 -- User Plans RLS
+-- SELECT-ONLY for the row owner. This table holds authoritative billing/trial state
+-- (subscription_status, trial_ends_at, current_period_end, plan). ALL writes go through the
+-- service-role backend (trial provisioning + Lemon Squeezy webhook), which bypasses RLS.
+-- Owner INSERT/UPDATE/DELETE are intentionally NOT granted — otherwise a user could set
+-- their own subscription_status='active' or trial_ends_at far in the future from the browser
+-- (anon key) and get free access forever, or delete the row to reset their trial.
 alter table user_plans enable row level security;
 
 create policy "Users can view their own plan"
   on user_plans for select using (auth.uid() = user_id);
-
-create policy "Users can insert their own plan"
-  on user_plans for insert with check (auth.uid() = user_id);
-
-create policy "Users can update their own plan"
-  on user_plans for update using (auth.uid() = user_id);
-
-create policy "Users can delete their own plan"
-  on user_plans for delete using (auth.uid() = user_id);
 
 -- =============================================
 -- Indexes for query performance
@@ -416,19 +407,12 @@ create table if not exists smtp_accounts (
 );
 
 -- SMTP Accounts RLS
+-- SELECT-only for the owner. These rows hold encrypted SMTP passwords; the backend
+-- (service role) manages all writes. Owner writes are not granted.
 alter table smtp_accounts enable row level security;
 
 create policy "Users can view their own smtp accounts"
   on smtp_accounts for select using (auth.uid() = user_id);
-
-create policy "Users can insert their own smtp accounts"
-  on smtp_accounts for insert with check (auth.uid() = user_id);
-
-create policy "Users can update their own smtp accounts"
-  on smtp_accounts for update using (auth.uid() = user_id);
-
-create policy "Users can delete their own smtp accounts"
-  on smtp_accounts for delete using (auth.uid() = user_id);
 
 create index if not exists idx_smtp_accounts_user_id on smtp_accounts(user_id);
 

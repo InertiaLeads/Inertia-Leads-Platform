@@ -341,12 +341,77 @@ router.get("/:token", async (req, res) => {
       }).catch(() => {});
     }
 
+    // --- Real comparison benchmark ------------------------------------------
+    // Average "health" of businesses we've analysed, for an honest comparison.
+    // `score` is the opportunity score (higher = more website problems); the
+    // report displays healthScore = 100 - score, so we convert the average the
+    // same way.
+    //
+    // Industry labels are fragmented, so we group them into broad parent buckets
+    // (see industryGroups.ts) and average within the prospect's bucket. Resolution
+    // order: (1) the prospect's industry GROUP if it has enough samples; (2) the
+    // exact industry label, so unmapped niches still pool; (3) all industries.
+    // Below the threshold at every level we return null and the report hides the
+    // comparison. Best-effort — a failure here must never break the report.
+    const MIN_BENCHMARK_SAMPLES = 15;
+    const BENCHMARK_SAMPLE_CAP = 5000;
+    let benchmark: { avgHealth: number; sampleCount: number; scope: "industry" | "all"; label: string } | null = null;
+    try {
+      const { canonicalIndustry } = await import("../services/industryGroups");
+
+      const { data: rows } = await supabase
+        .from("leads")
+        .select("industry, score")
+        .gt("score", 0)
+        .neq("id", lead.id)
+        .limit(BENCHMARK_SAMPLE_CAP);
+
+      if (rows && rows.length > 0) {
+        const avgHealthFromScores = (scores: number[]): number => {
+          const avgScore = scores.reduce((sum, n) => sum + n, 0) / scores.length;
+          return Math.round(Math.max(0, Math.min(100, 100 - avgScore)));
+        };
+
+        // 1) Prospect's industry group (e.g. all "lawyer" variants → Legal)
+        const prospectGroup = canonicalIndustry(lead.industry);
+        if (prospectGroup) {
+          const groupScores = rows
+            .filter((r) => canonicalIndustry(r.industry as string | null)?.key === prospectGroup.key)
+            .map((r) => (r.score as number) || 0);
+          if (groupScores.length >= MIN_BENCHMARK_SAMPLES) {
+            benchmark = { avgHealth: avgHealthFromScores(groupScores), sampleCount: groupScores.length, scope: "industry", label: prospectGroup.label };
+          }
+        }
+
+        // 2) Exact industry label (covers niches not mapped to any group)
+        if (!benchmark) {
+          const raw = (lead.industry || "").trim().toLowerCase();
+          if (raw) {
+            const exactScores = rows
+              .filter((r) => ((r.industry as string | null) || "").trim().toLowerCase() === raw)
+              .map((r) => (r.score as number) || 0);
+            if (exactScores.length >= MIN_BENCHMARK_SAMPLES) {
+              benchmark = { avgHealth: avgHealthFromScores(exactScores), sampleCount: exactScores.length, scope: "industry", label: lead.industry || "your industry" };
+            }
+          }
+        }
+
+        // 3) All industries
+        if (!benchmark && rows.length >= MIN_BENCHMARK_SAMPLES) {
+          benchmark = { avgHealth: avgHealthFromScores(rows.map((r) => (r.score as number) || 0)), sampleCount: rows.length, scope: "all", label: "business" };
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "Benchmark computation failed (non-fatal)");
+    }
+
     // Return only safe, public-facing data — strip internal fields
     res.json({
       company: lead.company,
       website: lead.website,
       industry: lead.industry || ed.industry || "Local Business",
       score: lead.score,
+      benchmark,
       serviceType,
       language: lead.detected_language || "eng",
       summary: ed.summary || null,

@@ -347,7 +347,11 @@ async function processEmailQueue() {
       }
 
       // ===== PROCESS FOLLOW-UP EMAILS (batch) =====
-      if (followUpWindow.canSend) {
+      // Gate on subscription: getDailyLimit returns 0 when hasActiveSubscription() is false
+      // (expired trial / lapsed / paused plan). Without this, follow-ups queued while the trial
+      // was active would keep firing after it expires — sending on our system with no subscription.
+      const { limit: followUpDailyLimit } = await getDailyLimit(campaign.user_id);
+      if (followUpWindow.canSend && followUpDailyLimit > 0) {
         const { data: followUpEmails } = await supabase
           .from("emails")
           .select("*")

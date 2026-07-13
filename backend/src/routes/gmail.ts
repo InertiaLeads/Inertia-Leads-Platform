@@ -40,28 +40,29 @@ router.get("/auth-url", authMiddleware, async (req: AuthenticatedRequest, res) =
 // No authMiddleware: Google redirects here without a Bearer token.
 // User identity is verified via the signed state parameter instead.
 router.get("/callback", async (req, res) => {
+  // Google redirects the BROWSER here, so we must respond with an HTTP redirect back to the
+  // frontend Settings page (not JSON). The full-page load re-fetches connected inboxes, so the
+  // Gmail card shows the newly connected address; the ?gmail= param drives a success/error toast.
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
   try {
     const code = req.query.code as string;
     const state = req.query.state as string;
 
     if (!code) {
-      res.status(400).json({ error: "Authorization code is required" });
+      res.redirect(`${frontendUrl}/settings?gmail=error`);
       return;
     }
 
     const userId = extractOAuthStateUserId(state);
     if (!userId) {
-      res.status(403).json({ error: "Invalid or expired OAuth state. Please start the connection process again." });
+      res.redirect(`${frontendUrl}/settings?gmail=error`);
       return;
     }
 
-    const result = await handleOAuthCallback(code, userId);
-    res.json({
-      message: "Gmail connected successfully",
-      email: result.email,
-    });
+    await handleOAuthCallback(code, userId);
+    res.redirect(`${frontendUrl}/settings?gmail=connected`);
   } catch {
-    res.status(500).json({ error: "Failed to connect Gmail" });
+    res.redirect(`${frontendUrl}/settings?gmail=error`);
   }
 });
 

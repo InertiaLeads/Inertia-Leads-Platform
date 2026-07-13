@@ -15,15 +15,15 @@ export default function LockedFeatureModal() {
 
   let title = "Feature Locked";
   let description = (
-    <>To access this feature, please complete your setup first — select a plan and add your card details to start your <span className="text-[#a5a0e6] font-semibold">7-day free trial</span>.</>
+    <>To access this feature, please <span className="text-[#a5a0e6] font-semibold">choose a plan</span> from your settings.</>
   );
   let ctaText = "Go to Settings";
-  let footerText = "No charges during trial • Cancel anytime";
+  let footerText = "Cancel anytime";
 
   if (isTrialExpired) {
-    title = "Trial Expired";
+    title = "Free Trial Ended";
     description = (
-      <>Your 7-day free trial has ended. To continue using all features, please <span className="text-[#a5a0e6] font-semibold">subscribe to a plan</span>.</>
+      <>Your 7-day free trial has ended. To continue using all features, please <span className="text-[#a5a0e6] font-semibold">choose a plan</span>.</>
     );
     ctaText = "Choose a Plan";
     footerText = "Pick up right where you left off";

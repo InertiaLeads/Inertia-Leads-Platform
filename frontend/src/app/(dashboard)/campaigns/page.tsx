@@ -274,7 +274,8 @@ export default function CampaignsPage() {
           <div className="flex items-center justify-center gap-3 mt-5">
             <Link
               href="/upload"
-              className="px-5 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl shadow-lg shadow-blue-200 transition-all hover:from-blue-700 hover:to-indigo-700"
+              className="px-5 py-2.5 text-sm font-semibold text-white rounded-xl shadow-lg transition-all hover:shadow-xl hover:scale-[1.02]"
+              style={{ background: "linear-gradient(135deg, #3d3580 0%, #6962c4 100%)", boxShadow: "0 4px 16px rgba(105,98,196,0.35)" }}
             >
               Upload Leads
             </Link>

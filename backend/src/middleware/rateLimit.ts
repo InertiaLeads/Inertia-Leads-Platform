@@ -67,11 +67,19 @@ function getUserKey(req: Request): string {
   return ipKeyGenerator(req.ip || "unknown");
 }
 
-// General API rate limiter: 100 requests per 15 minutes per user
+// Skip rate limiting entirely in local development so manual testing isn't throttled.
+// Production (NODE_ENV === "production") always enforces every limit below.
+const skipRateLimitInDev = () => process.env.NODE_ENV !== "production";
+
+// General API rate limiter: 300 requests per 15 minutes per user.
+// Covers cheap read endpoints (stats, inbox status, profile…). A dashboard makes several calls
+// per page, so 300 leaves comfortable headroom for real active use while still capping abuse.
+// Cost-sensitive/auth endpoints have their own stricter limiters below (unchanged).
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 300,
   keyGenerator: getUserKey,
+  skip: skipRateLimitInDev,
   message: { error: "Too many requests, please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -82,6 +90,7 @@ export const sendEmailLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
   keyGenerator: getUserKey,
+  skip: skipRateLimitInDev,
   message: { error: "Email sending rate limit exceeded. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -92,6 +101,7 @@ export const generateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
   keyGenerator: getUserKey,
+  skip: skipRateLimitInDev,
   message: { error: "Generation rate limit exceeded. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -101,6 +111,7 @@ export const generateLimiter = rateLimit({
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
+  skip: skipRateLimitInDev,
   message: { error: "Too many auth attempts. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -111,6 +122,7 @@ export const autoFindLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
   keyGenerator: getUserKey,
+  skip: skipRateLimitInDev,
   message: {
     error: "Lead finding rate limit exceeded. Maximum 5 searches per hour.",
   },
@@ -123,6 +135,7 @@ export const enrichLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
   keyGenerator: getUserKey,
+  skip: skipRateLimitInDev,
   message: { error: "Enrichment rate limit exceeded. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,

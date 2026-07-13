@@ -6,6 +6,7 @@ import SidebarNav from "./SidebarNav";
 import PageTitle from "./PageTitle";
 import TrialBadge from "./TrialBadge";
 import { PlanProvider } from "./PlanContext";
+import GlobalAccessGuard from "./GlobalAccessGuard";
 
 function AvatarDropdown({ displayName, avatarUrl }: { displayName: string; avatarUrl?: string }) {
   const initial = (displayName?.[0] || "U").toUpperCase();
@@ -122,7 +123,9 @@ export default async function DashboardLayout({
       </aside>
 
       {/* Main content */}
-      <main className="ml-64 pt-[88px] p-8">{children}</main>
+      <main className="ml-64 pt-[88px] p-8">
+        <GlobalAccessGuard>{children}</GlobalAccessGuard>
+      </main>
     </div>
     </PlanProvider>
   );

@@ -54,11 +54,16 @@ export const PLAN_CONFIGS: Record<PlanTier, PlanConfig> = {
 // =============================================
 // Trial Limits — uniform for all plans during trial
 // =============================================
-const TRIAL_DAILY_EMAILS = 50;
-const TRIAL_DAILY_LEADS = 50;
-const TRIAL_DAILY_GENERATIONS = 150; // 50 × 3
-const TRIAL_ENRICH_BATCH = 50;
-const TRIAL_MONTHLY_LEADS = 350; // ~50/day × 7 days
+const TRIAL_DAILY_EMAILS = 20;      // emails sent/day during trial
+const TRIAL_DAILY_LEADS = 20;       // leads/day (auto-find + CSV share this bucket)
+const TRIAL_DAILY_GENERATIONS = 60; // 20 leads × 3 emails (initial + 2 follow-ups)
+const TRIAL_ENRICH_BATCH = 20;      // max leads per single enrich request
+const TRIAL_MONTHLY_LEADS = 140;    // 20/day × 7 days
+
+// Number of free-trial days granted automatically on registration (no card required)
+const TRIAL_DURATION_DAYS = 7;
+// Plan whose features the free trial unlocks
+const TRIAL_PLAN: PlanTier = "growth";
 
 // =============================================
 // Feature Gating — which features each plan unlocks
@@ -300,15 +305,20 @@ export async function getUserPlan(userId: string): Promise<{
     .single();
 
   if (error || !data) {
+    // Brand-new user: auto-start a 7-day free trial on the Growth plan (no card required).
+    // The trial clock starts on the user's first authenticated API call, which happens right
+    // after they verify email and land on /settings.
+    const trialEndsIso = new Date(Date.now() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
     // Try INSERT-only (ignoreDuplicates: true = ON CONFLICT DO NOTHING).
     // This creates a row for genuinely new users but NEVER overwrites existing data.
     await supabase
       .from("user_plans")
       .upsert({
         user_id: userId,
-        plan: DEFAULT_PLAN,
-        subscription_status: "none",
-        trial_ends_at: null,
+        plan: TRIAL_PLAN,
+        subscription_status: "trialing",
+        trial_ends_at: trialEndsIso,
         is_active: true,
         leads_found_this_month: 0,
         leads_found_reset_at: new Date().toISOString(),
@@ -864,6 +874,38 @@ export async function incrementEmailsGeneratedToday(userId: string, count: numbe
 }
 
 // =============================================
+// Atomically CHECK-AND-RESERVE daily generation quota (race-safe).
+// Grants min(requested, dailyLimit - usedToday) in a single locked UPDATE, so concurrent
+// requests can't both pass a check and overshoot the cap (each generation = a paid GPT call).
+// Callers generate ONLY the granted amount and must NOT call incrementEmailsGeneratedToday after.
+// Reconcile any unused grant with releaseEmailsGeneratedToday().
+// Returns the number of generations granted (0 if the cap is already reached).
+// =============================================
+export async function reserveGenerationsToday(userId: string, requested: number, dailyLimit: number): Promise<number> {
+  if (requested <= 0) return 0;
+  const { data, error } = await supabase.rpc("reserve_emails_generated_today", {
+    p_user_id: userId,
+    p_requested: requested,
+    p_limit: dailyLimit,
+  });
+  if (error) {
+    console.error(`[reserveGenerationsToday] RPC error for user ${userId}:`, error.message);
+    return 0;
+  }
+  return typeof data === "number" ? data : 0;
+}
+
+// Give back generation quota reserved but not used (invalid/suppressed/failed leads).
+// Safe: only reconciles within the same request's grant; never drops the counter below 0.
+export async function releaseGenerationsToday(userId: string, count: number): Promise<void> {
+  if (count <= 0) return;
+  await supabase.rpc("release_emails_generated_today", {
+    p_user_id: userId,
+    p_count: count,
+  });
+}
+
+// =============================================
 // Atomically increment daily email sent counter
 // Same pattern — monotonic, never decrements.
 // Deleted campaigns still count against the daily send limit.
@@ -904,7 +946,7 @@ export async function checkDailyGenerationLimit(userId: string): Promise<{
     allowed: remaining > 0,
     remaining,
     usedToday,
-    dailyLimit: config.maxDailyGenerations,
+    dailyLimit, // trial-adjusted (60 during trial), else plan's maxDailyGenerations
     plan: userPlan.plan,
   };
 }

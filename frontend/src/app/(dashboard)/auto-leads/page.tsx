@@ -197,6 +197,7 @@ export default function AutoLeadsPage() {
   const [loadingSources, setLoadingSources] = useState(true);
   const [findLimitReached, setFindLimitReached] = useState(false);
   const [findLimitMsg, setFindLimitMsg] = useState("");
+  const [limitChecked, setLimitChecked] = useState(false);
   const [sourceSearch, setSourceSearch] = useState("");
   const [sourcePage, setSourcePage] = useState(1);
   const SOURCES_PER_PAGE = 10;
@@ -231,7 +232,9 @@ export default function AutoLeadsPage() {
           setFindLimitReached(true);
           setFindLimitMsg(`Daily lead find limit reached (${stats.leadsFoundToday}/${stats.dailyLeadFindLimit}). Try again tomorrow.`);
         }
-      } catch { /* ignore */ }
+      } catch { /* ignore */ } finally {
+        setLimitChecked(true);
+      }
     };
     checkLimit();
   }, []);
@@ -296,8 +299,13 @@ export default function AutoLeadsPage() {
       setSources((prev) => [newSource, ...prev]);
 
       findProgress.finish();
-      const dupMsg = response.duplicatesSkipped ? ` (${response.duplicatesSkipped} duplicates skipped)` : "";
-      toast.addToast(`Found ${response.count} new leads!${dupMsg}`, response.count > 0 ? "success" : "info");
+      if (response.count > 0) {
+        const dupMsg = response.duplicatesSkipped ? ` (${response.duplicatesSkipped} duplicates skipped)` : "";
+        toast.addToast(`Found ${response.count} new leads!${dupMsg}`, "success");
+      } else {
+        // Genuine "no results" — show the guiding message from the backend (city/niche tip).
+        toast.addToast(response.message || `No businesses found for "${niche}" in "${location}". Try a specific city or a different niche.`, "info");
+      }
 
       // If leads found and campaign created, navigate to campaign
       if (response.campaign_id && response.count > 0) {
@@ -461,6 +469,13 @@ export default function AutoLeadsPage() {
               </div>
 
               <div className="p-6">
+                {!limitChecked ? (
+                  <div className="space-y-4 animate-pulse">
+                    <div className="h-10 rounded-xl" style={{ background: "rgba(105,98,196,0.08)" }} />
+                    <div className="h-10 rounded-xl" style={{ background: "rgba(105,98,196,0.06)" }} />
+                    <div className="h-10 rounded-xl" style={{ background: "rgba(105,98,196,0.04)" }} />
+                  </div>
+                ) : (<>
                 {findLimitReached && (
                   <div className="mb-5 p-4 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl flex items-start gap-3">
                     <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
@@ -524,8 +539,8 @@ export default function AutoLeadsPage() {
                   <button
                     type="submit"
                     disabled={findingLeads || findLimitReached}
-                    className="group relative w-full px-5 py-3.5 text-white font-semibold rounded-xl overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none text-sm shadow-lg transition-all duration-500 ease-out active:scale-[0.99]"
-                    style={{ background: (findingLeads || findLimitReached) ? undefined : 'linear-gradient(135deg, #3d3580, #6962c4)', boxShadow: (findingLeads || findLimitReached) ? undefined : '0 8px 24px rgba(47, 39, 108, 0.4)' }}
+                    className="group relative w-full px-5 py-3.5 text-white font-semibold rounded-xl overflow-hidden transition-all duration-500 ease-out shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none text-sm active:scale-[0.99]"
+                    style={{ background: 'linear-gradient(135deg, #3d3580 0%, #6962c4 100%)', boxShadow: '0 8px 24px rgba(47,39,108,0.4)' }}
                     title={findLimitReached ? findLimitMsg : ""}
                   >
                     <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-1000 ease-in-out" />
@@ -550,6 +565,7 @@ export default function AutoLeadsPage() {
                   </button>
                 </form>
 
+              </>)}
               </div>
 
               {/* Quick Fill Footer */}

@@ -8,11 +8,16 @@ interface PricingModalProps {
   hasPlan: boolean;
   isExpired: boolean;
   isPastDue?: boolean;
+  isOnTrial?: boolean;
   onClose: () => void;
   onToast: (message: string, type: "success" | "error" | "info") => void;
 }
 
-export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, onClose, onToast }: PricingModalProps) {
+export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOnTrial, onClose, onToast }: PricingModalProps) {
+  // During the free trial the user has NO paid subscription yet (their `plan` is just the trial's
+  // Growth tier). So every plan must be purchasable — treat trial like "no plan": show "Get Started"
+  // on all cards, no "Current Plan", no upgrade/downgrade confirmation (buying = a fresh checkout).
+  const noPaidPlan = isExpired || !hasPlan || !!isOnTrial;
   const [loading, setLoading] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
@@ -21,8 +26,9 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, onCl
   const PLAN_PRICES: Record<string, number> = { starter: 39, growth: 79, agency: 129 };
 
   function handlePlanClick(selectedPlan: string) {
-    // If user has an active plan and is switching (not expired/new), show confirmation
-    if (hasPlan && !isExpired && plan !== selectedPlan) {
+    // Only a paying subscriber switching plans sees the proration confirmation.
+    // Trial/expired/new users go straight to a fresh checkout for any plan.
+    if (!noPaidPlan && plan !== selectedPlan) {
       setConfirmPlan(selectedPlan);
     } else {
       handleSubscribe(selectedPlan);
@@ -186,7 +192,7 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, onCl
               <li className="flex items-start gap-2 text-xs text-gray-600"><div className="w-4 h-4 rounded-full bg-emerald-50 flex items-center justify-center flex-shrink-0 mt-0.5"><svg className="w-2.5 h-2.5 text-emerald-500" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg></div><span>Auto find leads</span></li>
               <li className="flex items-start gap-2 text-xs text-gray-600"><div className="w-4 h-4 rounded-full bg-emerald-50 flex items-center justify-center flex-shrink-0 mt-0.5"><svg className="w-2.5 h-2.5 text-emerald-500" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg></div><span>Daily limits reset at midnight</span></li>
             </ul>
-            {isExpired || !hasPlan ? (
+            {noPaidPlan ? (
               <button
                 onClick={() => handlePlanClick("starter")}
                 disabled={loading === "starter"}
@@ -246,7 +252,7 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, onCl
               <li className="flex items-start gap-2 text-xs text-gray-600"><div className="w-4 h-4 rounded-full bg-emerald-50 flex items-center justify-center flex-shrink-0 mt-0.5"><svg className="w-2.5 h-2.5 text-emerald-500" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg></div><span>AI audit reports (SEO, marketing & web)</span></li>
               <li className="flex items-start gap-2 text-xs text-gray-400"><div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5"><svg className="w-2.5 h-2.5 text-gray-300" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd"/></svg></div><span>CRM integration <em>(coming soon)</em></span></li>
             </ul>
-            {isExpired || !hasPlan ? (
+            {noPaidPlan ? (
               <button
                 onClick={() => handlePlanClick("growth")}
                 disabled={loading === "growth"}
@@ -315,7 +321,7 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, onCl
               <li className="flex items-start gap-2 text-xs text-gray-600"><div className="w-4 h-4 rounded-full bg-emerald-50 flex items-center justify-center flex-shrink-0 mt-0.5"><svg className="w-2.5 h-2.5 text-emerald-500" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg></div><span>AI audit reports (SEO, marketing & web)</span></li>
               <li className="flex items-start gap-2 text-xs text-gray-400"><div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5"><svg className="w-2.5 h-2.5 text-gray-300" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd"/></svg></div><span>CRM integration <em>(coming soon)</em></span></li>
             </ul>
-            {isExpired || !hasPlan ? (
+            {noPaidPlan ? (
               <button
                 onClick={() => handlePlanClick("agency")}
                 disabled={loading === "agency"}

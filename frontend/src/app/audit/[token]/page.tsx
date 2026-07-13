@@ -20,6 +20,12 @@ interface AuditData {
   website: string;
   industry: string;
   score: number;
+  benchmark?: {
+    avgHealth: number;
+    sampleCount: number;
+    scope: "industry" | "all";
+    label: string;
+  } | null;
   serviceType: string;
   language: string;
   summary: string | null;
@@ -705,7 +711,8 @@ export default function AuditReportPage() {
   const failChecks = checks.filter(c => !c.pass);
   const passChecks = checks.filter(c => c.pass);
   const healthScore = Math.max(0, Math.min(100, 100 - data.score));
-  const industryAvg = 52 + (industry.length % 11);
+  const benchmark = data.benchmark ?? null;
+  const industryAvg = benchmark ? benchmark.avgHealth : null;
   const estimatedLossMin = failChecks.length * 8;
   const estimatedLossMax = failChecks.length * 15;
 
@@ -1007,35 +1014,41 @@ export default function AuditReportPage() {
           </div>
         )}
 
-        {/* How You Compare */}
-        <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-          <p className="text-sm font-bold text-gray-900 mb-4">How You Compare</p>
-          <div className="space-y-3">
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-xs font-semibold text-gray-700">Your Score</span>
-                <span className="text-xs font-bold" style={{ color: healthScore <= 30 ? '#ef4444' : healthScore <= 60 ? '#f59e0b' : '#10b981' }}>{healthScore}/100</span>
+        {/* How You Compare — only shown when we have a real benchmark */}
+        {benchmark && industryAvg !== null && (
+          <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+            <p className="text-sm font-bold text-gray-900 mb-4">How You Compare</p>
+            <div className="space-y-3">
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs font-semibold text-gray-700">Your Score</span>
+                  <span className="text-xs font-bold" style={{ color: healthScore <= 30 ? '#ef4444' : healthScore <= 60 ? '#f59e0b' : '#10b981' }}>{healthScore}/100</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all duration-1000" style={{ width: `${healthScore}%`, backgroundColor: healthScore <= 30 ? '#ef4444' : healthScore <= 60 ? '#f59e0b' : '#10b981' }} />
+                </div>
               </div>
-              <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                <div className="h-full rounded-full transition-all duration-1000" style={{ width: `${healthScore}%`, backgroundColor: healthScore <= 30 ? '#ef4444' : healthScore <= 60 ? '#f59e0b' : '#10b981' }} />
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs font-semibold text-gray-500">{benchmark.scope === "industry" ? `Average ${benchmark.label}` : "Average business"}</span>
+                  <span className="text-xs font-bold text-gray-400">{industryAvg}/100</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-gray-300 transition-all duration-1000" style={{ width: `${industryAvg}%` }} />
+                </div>
               </div>
             </div>
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-xs font-semibold text-gray-500">Average {industry}</span>
-                <span className="text-xs font-bold text-gray-400">{industryAvg}/100</span>
-              </div>
-              <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                <div className="h-full rounded-full bg-gray-300 transition-all duration-1000" style={{ width: `${industryAvg}%` }} />
-              </div>
-            </div>
+            {healthScore < industryAvg ? (
+              <p className="text-xs text-gray-500 mt-3 leading-relaxed">
+                Your digital presence scores <span className="font-bold text-red-600">{industryAvg - healthScore} points below</span> the average {benchmark.scope === "industry" ? `${benchmark.label.toLowerCase()} business` : "business"} we&rsquo;ve analyzed ({benchmark.sampleCount} analyzed).
+              </p>
+            ) : (
+              <p className="text-xs text-gray-500 mt-3 leading-relaxed">
+                You&rsquo;re <span className="font-bold text-emerald-600">{healthScore - industryAvg} points above</span> the average {benchmark.scope === "industry" ? `${benchmark.label.toLowerCase()} business` : "business"} we&rsquo;ve analyzed ({benchmark.sampleCount} analyzed).
+              </p>
+            )}
           </div>
-          {healthScore < industryAvg && (
-            <p className="text-xs text-gray-500 mt-3 leading-relaxed">
-              Your digital presence scores <span className="font-bold text-red-600">{industryAvg - healthScore} points below</span> the average {industry.toLowerCase()} business in your area.
-            </p>
-          )}
-        </div>
+        )}
 
         {/* Estimated customer loss */}
         {failChecks.length > 0 && (

@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import supabase from "../services/supabase";
 import openai from "../services/openai";
-import { checkDailyGenerationLimit, PLAN_CONFIGS, getUserPlan, incrementEmailsGeneratedToday, ServiceType, getFeatureAccess } from "../services/planLimits";
+import { checkDailyGenerationLimit, PLAN_CONFIGS, getUserPlan, reserveGenerationsToday, releaseGenerationsToday, ServiceType, getFeatureAccess } from "../services/planLimits";
 import { getPageSpeedScores } from "../services/pageSpeed";
 import { getLanguageName } from "../utils/languageDetection";
 import { buildUnsubscribeUrl } from "../utils/unsubscribe";
@@ -594,8 +594,19 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    // Cap leads to remaining daily generation slots
-    const maxLeads = genCheck.remaining;
+    // Atomically RESERVE generation quota before doing paid OpenAI work (race-safe).
+    // Basic generate = 1 email (initial) per lead. Grant is clamped to the remaining daily cap.
+    const granted = await reserveGenerationsToday(req.userId!, newLeads.length, genCheck.dailyLimit);
+    if (granted <= 0) {
+      res.status(403).json({
+        error: `Daily AI generation limit reached (${genCheck.usedToday}/${genCheck.dailyLimit} on ${genCheck.plan} plan). Try again tomorrow.`,
+        usedToday: genCheck.usedToday,
+        dailyLimit: genCheck.dailyLimit,
+        plan: genCheck.plan,
+      });
+      return;
+    }
+    const maxLeads = granted;
     const cappedLeads = newLeads.slice(0, maxLeads);
 
     const generatedEmails: any[] = [];
@@ -661,6 +672,8 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
     generatedEmails.push(...results);
 
     if (generatedEmails.length === 0) {
+      // Nothing generated — give back the full reservation.
+      await releaseGenerationsToday(req.userId!, granted);
       res.status(500).json({ error: "Failed to generate any emails" });
       return;
     }
@@ -671,12 +684,15 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       .insert(generatedEmails);
 
     if (insertError) {
+      // Not saved — give back the full reservation.
+      await releaseGenerationsToday(req.userId!, granted);
       res.status(500).json({ error: "Failed to save generated emails" });
       return;
     }
 
-    // Increment monotonic daily generation counter (never decrements)
-    await incrementEmailsGeneratedToday(req.userId!, generatedEmails.length);
+    // Reconcile: the reservation already counted `granted`; give back any unused slots
+    // (leads that were invalid, suppressed, or failed generation).
+    await releaseGenerationsToday(req.userId!, granted - generatedEmails.length);
 
     await supabase
       .from("campaigns")
@@ -717,16 +733,9 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
       return;
     }
 
-    // Calculate how many leads we can process (each lead = 1 or 3 generations)
+    // Each lead = 1 generation (initial only) or 3 (initial + 2 follow-ups).
+    // Quota is atomically reserved after we know how many new leads there are (see below).
     const generationsPerLead = enableFollowups ? 3 : 1;
-    const maxLeads = Math.floor(genCheck.remaining / generationsPerLead);
-
-    if (maxLeads === 0) {
-      res.status(403).json({
-        error: `Not enough daily generation quota remaining. Need ${generationsPerLead} per lead, only ${genCheck.remaining} left.`,
-      });
-      return;
-    }
 
     // Get user's service type to tailor email generation
     const userPlan = await getUserPlan(req.userId!);
@@ -785,7 +794,21 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
       return;
     }
 
-    // Cap leads to remaining daily generation slots
+    // Atomically RESERVE generation quota before paid OpenAI work (race-safe).
+    // Each lead needs `generationsPerLead` emails; grant is clamped to the remaining daily cap.
+    const granted = await reserveGenerationsToday(req.userId!, newLeads.length * generationsPerLead, genCheck.dailyLimit);
+    if (granted < generationsPerLead) {
+      res.status(403).json({
+        error: `Daily AI generation limit reached (${genCheck.usedToday}/${genCheck.dailyLimit} on ${genCheck.plan} plan). Need ${generationsPerLead} per lead. Try again tomorrow.`,
+        usedToday: genCheck.usedToday,
+        dailyLimit: genCheck.dailyLimit,
+        plan: genCheck.plan,
+      });
+      return;
+    }
+    const maxLeads = Math.floor(granted / generationsPerLead);
+
+    // Cap leads to reserved daily generation slots
     const cappedLeads = newLeads.slice(0, maxLeads);
 
     const generatedEmails: any[] = [];
@@ -1072,6 +1095,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
     }
 
     if (generatedEmails.length === 0) {
+      await releaseGenerationsToday(req.userId!, granted);
       res.status(500).json({ error: "Failed to generate emails" });
       return;
     }
@@ -1081,12 +1105,14 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
       .insert(generatedEmails);
 
     if (insertError) {
+      await releaseGenerationsToday(req.userId!, granted);
       res.status(500).json({ error: "Failed to save generated emails" });
       return;
     }
 
-    // Increment monotonic daily generation counter (never decrements)
-    await incrementEmailsGeneratedToday(req.userId!, generatedEmails.length);
+    // Reconcile: reservation already counted `granted`; give back any unused slots
+    // (leads that were invalid, suppressed, or failed generation).
+    await releaseGenerationsToday(req.userId!, granted - generatedEmails.length);
 
     if (enableFollowups) {
       await supabase

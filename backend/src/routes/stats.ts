@@ -12,6 +12,10 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
+    // Start of the rolling 7-day window (today and the previous 6 days), UTC midnight.
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const weekStart = new Date(today.getTime() - 6 * DAY_MS);
+
     // Run all stats queries in parallel for speed
     const [
       { count: totalLeads },
@@ -23,6 +27,8 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       { data: scoredLeads },
       { count: callLeads },
       { count: sentToday },
+      { data: weekLeadRows },
+      { data: weekEmailRows },
     ] = await Promise.all([
       supabase.from("leads").select("*", { count: "exact", head: true }).eq("user_id", req.userId),
       supabase.from("campaigns").select("*", { count: "exact", head: true }).eq("user_id", req.userId),
@@ -33,7 +39,33 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       supabase.from("leads").select("score").eq("user_id", req.userId).gt("score", 0),
       supabase.from("leads").select("*", { count: "exact", head: true }).eq("user_id", req.userId).eq("contact_method", "call"),
       supabase.from("emails").select("*", { count: "exact", head: true }).eq("user_id", req.userId).eq("status", "sent").gte("sent_at", today.toISOString()),
+      // Last 7 days: leads found (by created_at) and emails sent (by sent_at) for the weekly chart
+      supabase.from("leads").select("created_at").eq("user_id", req.userId).gte("created_at", weekStart.toISOString()),
+      supabase.from("emails").select("sent_at").eq("user_id", req.userId).eq("status", "sent").gte("sent_at", weekStart.toISOString()),
     ]);
+
+    // Bucket the last 7 days into per-day counts. Index 0 = 6 days ago, index 6 = today.
+    const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const weeklyLeads = new Array(7).fill(0);
+    const weeklyEmails = new Array(7).fill(0);
+    const weeklyLabels: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart.getTime() + i * DAY_MS);
+      weeklyLabels.push(i === 6 ? "Today" : WEEKDAYS[d.getUTCDay()]);
+    }
+    const bucketIndex = (iso: string | null): number => {
+      if (!iso) return -1;
+      const idx = Math.floor((new Date(iso).getTime() - weekStart.getTime()) / DAY_MS);
+      return idx >= 0 && idx < 7 ? idx : -1;
+    };
+    for (const row of weekLeadRows || []) {
+      const i = bucketIndex((row as { created_at: string }).created_at);
+      if (i >= 0) weeklyLeads[i]++;
+    }
+    for (const row of weekEmailRows || []) {
+      const i = bucketIndex((row as { sent_at: string }).sent_at);
+      if (i >= 0) weeklyEmails[i]++;
+    }
 
     const sent = emailsSent || 0;
     const replies = repliesReceived || 0;
@@ -58,6 +90,9 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       avgLeadScore: avgScore,
       callLeads: callLeads || 0,
       sentToday: sentToday || 0,
+      weeklyLeads,
+      weeklyEmails,
+      weeklyLabels,
       dailySendLimit: planInfo.dailyLimit,
       plan: planInfo.plan,
       serviceType: planInfo.serviceType,

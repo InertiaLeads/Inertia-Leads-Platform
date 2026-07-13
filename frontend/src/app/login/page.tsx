@@ -103,54 +103,6 @@ export default function AuthPage() {
     if (error) setError(error.message);
   };
 
-  // Verification email sent screen
-  if (emailSent) {
-    return (
-      <div className="min-h-screen relative overflow-hidden" style={{ background: "linear-gradient(135deg, #0d0a25 0%, #1a1540 50%, #0d0a25 100%)" }}>
-        <div className="absolute inset-0 opacity-[0.06]">
-          <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="loginDots" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="10" cy="10" r="1" fill="white" /></pattern></defs><rect width="100%" height="100%" fill="url(#loginDots)" /></svg>
-        </div>
-        <div className="absolute -top-32 -left-32 w-96 h-96 rounded-full blur-3xl" style={{ background: "rgba(105, 98, 196, 0.12)" }} />
-        <div className="absolute top-1/3 right-[10%] w-72 h-72 rounded-full blur-3xl" style={{ background: "rgba(61, 53, 128, 0.10)" }} />
-        <div className="absolute -bottom-20 left-1/4 w-80 h-80 rounded-full blur-3xl" style={{ background: "rgba(105, 98, 196, 0.08)" }} />
-        <div className="absolute bottom-1/3 right-[30%] w-64 h-64 rounded-full blur-3xl" style={{ background: "rgba(61, 53, 128, 0.06)" }} />
-
-        <div className="relative z-10 min-h-screen flex items-center justify-center px-6">
-          <div className="flex flex-col lg:flex-row items-center gap-24 max-w-5xl w-full">
-            <div className="hidden lg:block flex-1 text-white">
-              <BrandingSide />
-            </div>
-            <div className="w-full max-w-sm bg-white/[0.07] backdrop-blur-md rounded-2xl border border-white/[0.12] shadow-2xl shadow-black/30 p-8 text-center">
-              <div className="text-5xl mb-4">📧</div>
-              <h2 className="text-2xl font-bold text-white">Check your email</h2>
-              <p className="mt-3 text-white/60 text-sm">
-                We sent a verification link to <span className="font-medium text-white">{email}</span>.
-                Click the link in your email to verify your account.
-              </p>
-              <p className="mt-4 text-xs text-white/30">
-                Didn&apos;t receive the email? Check your spam folder.
-              </p>
-              <div className="mt-6 flex gap-3 justify-center">
-                <button
-                  onClick={() => { setEmailSent(false); resetForm(); }}
-                  className="px-4 py-2 text-sm font-medium text-white/70 bg-white/[0.06] border border-white/[0.12] rounded-lg hover:bg-white/[0.10]"
-                >
-                  Try again
-                </button>
-                <button
-                  onClick={() => { setEmailSent(false); resetForm(); setMode("login"); }}
-                  className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 rounded-lg hover:from-violet-700 hover:to-fuchsia-700"
-                >
-                  Go to Sign In
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="h-screen relative overflow-hidden" style={{ background: "linear-gradient(135deg, #0d0a25 0%, #1a1540 50%, #0d0a25 100%)" }}>
       <div className="absolute inset-0 opacity-[0.06]">
@@ -271,6 +223,39 @@ export default function AuthPage() {
             <img src="/images/logo-3.png" alt="Inertia Leads" className="h-14 mx-auto" />
           </div>
 
+          {emailSent ? (
+          /* Verification email sent — rendered inside the SAME card/background as the auth form */
+          <div className="text-center py-2">
+            <div className="mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-5" style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.25), rgba(99,102,241,0.35))", boxShadow: "0 0 16px rgba(139,92,246,0.2)" }}>
+              <svg className="w-8 h-8" style={{ color: "#c4b5fd" }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-white">Check your email</h2>
+            <p className="mt-3 text-white/60 text-sm leading-relaxed">
+              We sent a verification link to <span className="font-medium text-white">{email}</span>. Click the link to verify your account.
+            </p>
+            <p className="mt-4 text-xs text-white/30">
+              Didn&apos;t receive it? Check your spam folder.
+            </p>
+            <div className="mt-6 space-y-3">
+              <button
+                onClick={() => { setEmailSent(false); resetForm(); setMode("login"); }}
+                className="w-full py-3 px-4 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.02] active:scale-[0.98]"
+                style={{ background: "linear-gradient(135deg, #8b84e0, #6962c4)", boxShadow: "0 4px 16px rgba(105,98,196,0.4)" }}
+              >
+                Go to Sign In
+              </button>
+              <button
+                onClick={() => { setEmailSent(false); resetForm(); }}
+                className="w-full py-2.5 px-4 text-sm font-medium text-white/70 bg-white/[0.06] border border-white/[0.12] rounded-xl hover:bg-white/[0.10] transition-all"
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+          ) : (
+          <>
           {/* Tab switcher */}
           <div className="flex mb-6 bg-white/[0.06] rounded-xl p-1 border border-white/[0.08]">
             <button
@@ -475,6 +460,8 @@ export default function AuthPage() {
               </span>
             </button>
           </form>
+          </>
+          )}
                 </div>
               </div>
             </div>
