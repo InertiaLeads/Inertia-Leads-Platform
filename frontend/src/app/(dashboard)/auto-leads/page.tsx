@@ -197,6 +197,7 @@ export default function AutoLeadsPage() {
   const [loadingSources, setLoadingSources] = useState(true);
   const [findLimitReached, setFindLimitReached] = useState(false);
   const [findLimitMsg, setFindLimitMsg] = useState("");
+  const [limitChecked, setLimitChecked] = useState(false);
   const [sourceSearch, setSourceSearch] = useState("");
   const [sourcePage, setSourcePage] = useState(1);
   const SOURCES_PER_PAGE = 10;
@@ -231,7 +232,9 @@ export default function AutoLeadsPage() {
           setFindLimitReached(true);
           setFindLimitMsg(`Daily lead find limit reached (${stats.leadsFoundToday}/${stats.dailyLeadFindLimit}). Try again tomorrow.`);
         }
-      } catch { /* ignore */ }
+      } catch { /* ignore */ } finally {
+        setLimitChecked(true);
+      }
     };
     checkLimit();
   }, []);
@@ -466,6 +469,13 @@ export default function AutoLeadsPage() {
               </div>
 
               <div className="p-6">
+                {!limitChecked ? (
+                  <div className="space-y-4 animate-pulse">
+                    <div className="h-10 rounded-xl" style={{ background: "rgba(105,98,196,0.08)" }} />
+                    <div className="h-10 rounded-xl" style={{ background: "rgba(105,98,196,0.06)" }} />
+                    <div className="h-10 rounded-xl" style={{ background: "rgba(105,98,196,0.04)" }} />
+                  </div>
+                ) : (<>
                 {findLimitReached && (
                   <div className="mb-5 p-4 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl flex items-start gap-3">
                     <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
@@ -555,6 +565,7 @@ export default function AutoLeadsPage() {
                   </button>
                 </form>
 
+              </>)}
               </div>
 
               {/* Quick Fill Footer */}

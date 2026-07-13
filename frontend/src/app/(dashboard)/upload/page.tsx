@@ -92,6 +92,7 @@ export default function UploadPage() {
   const [dragActive, setDragActive] = useState(false);
   const [dailyUsed, setDailyUsed] = useState(0);
   const [freshLimit, setFreshLimit] = useState<number | null>(null);
+  const [statsLoaded, setStatsLoaded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const toast = useToast();
@@ -99,7 +100,7 @@ export default function UploadPage() {
   const dailyLimit = freshLimit ?? plan.dailyLeadFindLimit;
   const planLabel = plan.planLabel || "Starter";
   const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
-  const isAtLimit = dailyRemaining <= 0;
+  const isAtLimit = statsLoaded && dailyRemaining <= 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -108,9 +109,10 @@ export default function UploadPage() {
         if (!cancelled) {
           setDailyUsed(data.leadsFoundToday);
           setFreshLimit(data.dailyLeadFindLimit);
+          setStatsLoaded(true);
         }
       })
-      .catch(() => {});
+      .catch(() => { if (!cancelled) setStatsLoaded(true); });
     return () => { cancelled = true; };
   }, []);
 
@@ -245,7 +247,15 @@ export default function UploadPage() {
 
             <form onSubmit={handleUpload} className="p-6 space-y-6">
               {/* Daily limit status */}
-              {isAtLimit ? (
+              {!statsLoaded ? (
+                <div className="flex items-start gap-3 p-4 rounded-xl animate-pulse" style={{ background: "rgba(105,98,196,0.06)", border: "1px solid rgba(105,98,196,0.15)" }}>
+                  <div className="flex-shrink-0 w-8 h-8 rounded-lg" style={{ background: "rgba(105,98,196,0.12)" }} />
+                  <div className="flex-1 space-y-2 py-1">
+                    <div className="h-3 rounded w-1/3" style={{ background: "rgba(105,98,196,0.12)" }} />
+                    <div className="h-2.5 rounded w-2/3" style={{ background: "rgba(105,98,196,0.08)" }} />
+                  </div>
+                </div>
+              ) : isAtLimit ? (
                 <div className="flex items-start gap-3 p-4 rounded-xl bg-red-50 border border-red-200">
                   <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center">
                     <svg className="w-4 h-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
