@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import supabase from "../services/supabase";
 import { getPageSpeedScores } from "../services/pageSpeed";
-import { getUserPlan, getFeatureAccess } from "../services/planLimits";
+import { getUserPlan, getFeatureAccess, checkSubscriptionAccess } from "../services/planLimits";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -16,6 +16,16 @@ router.post("/generate", authMiddleware, async (req: AuthenticatedRequest, res) 
 
     if (!leadId) {
       res.status(400).json({ error: "Lead ID is required" });
+      return;
+    }
+
+    // SECURITY: Subscription access gate — must pass before generating a report.
+    // The feature-flag check below stays "growth: true" after a trial lapses (the
+    // plan column never changes), so without this an expired-trial user could still
+    // generate audits. This closes the day-8 lock hole.
+    const access = await checkSubscriptionAccess(req.userId!);
+    if (!access.hasAccess) {
+      res.status(403).json({ error: access.reason });
       return;
     }
 
