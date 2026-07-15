@@ -74,6 +74,67 @@ function ToastContainer({ toasts, removeToast }: { toasts: Toast[]; removeToast:
   );
 }
 
+// ===== Branded Confirmation Modal =====
+// Replaces the browser's native window.confirm() with an in-app dialog that
+// matches the app theme. Driven by the askConfirm() promise helper below.
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  confirmText: string;
+  danger: boolean;
+  resolve: (value: boolean) => void;
+}
+
+function ConfirmModal({
+  state,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  state: ConfirmDialogState;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const accent = state.danger ? "#ef4444" : "#6962c4";
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !busy && onCancel()} />
+      <div className="relative z-10 w-full max-w-md rounded-2xl p-6" style={{ background: "linear-gradient(135deg, #1a1540 0%, #0d0a25 100%)", border: "1px solid rgba(105,98,196,0.3)", boxShadow: "0 20px 60px rgba(13,10,37,0.6)" }}>
+        <div className="mx-auto w-14 h-14 rounded-full flex items-center justify-center mb-4" style={{ background: `${accent}1f` }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+        </div>
+
+        <h3 className="text-lg font-bold text-white text-center mb-2">{state.title}</h3>
+        <p className="text-sm text-gray-400 text-center mb-5">{state.message}</p>
+
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="flex-1 py-2.5 text-xs font-semibold rounded-xl text-white transition-all hover:opacity-90 disabled:opacity-50"
+            style={{ background: "linear-gradient(135deg, #6962c4 0%, #3d3580 100%)" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="flex-1 py-2.5 text-xs font-semibold rounded-xl border transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ color: accent, borderColor: `${accent}4d`, background: `${accent}14` }}
+          >
+            {busy ? "Working..." : state.confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface GmailAccount {
   id: string;
   email: string;
@@ -209,6 +270,24 @@ export default function SettingsPage() {
   const [serviceTypeLoading, setServiceTypeLoading] = useState(true);
   const [billingError, setBillingError] = useState(false);
   const toast = useToast();
+
+  // Branded confirm dialog — askConfirm() returns a promise that resolves
+  // true/false when the user clicks Confirm/Cancel, so callers can replace
+  // `if (!confirm(msg)) return` with `if (!(await askConfirm(...))) return`.
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const askConfirm = useCallback(
+    (opts: { title: string; message: string; confirmText?: string; danger?: boolean }) =>
+      new Promise<boolean>((resolve) => {
+        setConfirmDialog({
+          title: opts.title,
+          message: opts.message,
+          confirmText: opts.confirmText ?? "Confirm",
+          danger: opts.danger ?? true,
+          resolve,
+        });
+      }),
+    []
+  );
 
   const totalInboxes = gmailAccounts.length + smtpAccounts.length;
 
@@ -449,7 +528,7 @@ export default function SettingsPage() {
           await fetchAccounts();
         } catch (err) {
           console.error("Failed to connect Gmail:", err);
-          alert("Failed to connect Gmail. Please try again.");
+          toast.addToast("Failed to connect Gmail. Please try again.", "error");
         } finally {
           setLoading(false);
         }
@@ -464,19 +543,35 @@ export default function SettingsPage() {
       window.location.href = url;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start Gmail connection.";
-      alert(msg);
+      toast.addToast(msg, "error");
     }
   };
 
   const removeGmailInbox = async (accountId: string) => {
-    if (!confirm("Remove this Gmail account? Pending emails assigned to it will be reassigned to your primary inbox.")) return;
+    // Sole inbox (primary with no other accounts): removing it leaves the user
+    // with no way to send until they connect another, so warn accordingly.
+    const isSoleInbox = gmailAccounts.length === 1;
+    const ok = await askConfirm(
+      isSoleInbox
+        ? {
+            title: "Disconnect Gmail account?",
+            message: "You won't be able to send emails until you connect an inbox again. Any pending emails from this account will stop sending.",
+            confirmText: "Disconnect",
+          }
+        : {
+            title: "Remove Gmail account?",
+            message: "Pending emails assigned to it will be reassigned to your primary inbox.",
+            confirmText: "Remove",
+          }
+    );
+    if (!ok) return;
     try {
       setRemoving(accountId);
       await apiDelete(`/gmail/accounts/${accountId}`);
       await fetchAccounts();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to remove account.";
-      alert(msg);
+      toast.addToast(msg, "error");
     } finally {
       setRemoving(null);
     }
@@ -497,14 +592,19 @@ export default function SettingsPage() {
   };
 
   const removeSmtpInbox = async (accountId: string) => {
-    if (!confirm("Remove this SMTP account? Pending emails assigned to it will be reassigned.")) return;
+    const ok = await askConfirm({
+      title: "Remove SMTP account?",
+      message: "Pending emails assigned to it will be reassigned.",
+      confirmText: "Remove",
+    });
+    if (!ok) return;
     try {
       setRemoving(accountId);
       await apiDelete(`/smtp/accounts/${accountId}`);
       await fetchAccounts();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to remove SMTP account.";
-      alert(msg);
+      toast.addToast(msg, "error");
     } finally {
       setRemoving(null);
     }
@@ -1371,6 +1471,15 @@ export default function SettingsPage() {
         )}
 
         {/* Cancel Plan Modal */}
+        {confirmDialog && (
+          <ConfirmModal
+            state={confirmDialog}
+            busy={false}
+            onConfirm={() => { confirmDialog.resolve(true); setConfirmDialog(null); }}
+            onCancel={() => { confirmDialog.resolve(false); setConfirmDialog(null); }}
+          />
+        )}
+
         {showCancelModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !cancelling && setShowCancelModal(false)} />
@@ -1537,14 +1646,27 @@ export default function SettingsPage() {
                           </button>
                         )}
                         {account.is_primary && (
-                          <button
-                            onClick={() => reconnectGmail(account.id)}
-                            disabled={removing === account.id}
-                            className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 transition-all hover:opacity-80"
-                            style={{ color: "#3d3580", background: "rgba(105,98,196,0.1)", border: "1px solid rgba(105,98,196,0.25)" }}
-                          >
-                            {removing === account.id ? "Reconnecting..." : "↻ Reconnect"}
-                          </button>
+                          <>
+                            {/* Disconnect is only allowed for the primary when it's the sole
+                                inbox (backend blocks removing primary while others exist). */}
+                            {gmailAccounts.length === 1 && (
+                              <button
+                                onClick={() => removeGmailInbox(account.id)}
+                                disabled={removing === account.id}
+                                className="text-xs text-gray-400 hover:text-red-500 font-medium disabled:opacity-50 transition-colors"
+                              >
+                                {removing === account.id ? "..." : "Disconnect"}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => reconnectGmail(account.id)}
+                              disabled={removing === account.id}
+                              className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 transition-all hover:opacity-80"
+                              style={{ color: "#3d3580", background: "rgba(105,98,196,0.1)", border: "1px solid rgba(105,98,196,0.25)" }}
+                            >
+                              {removing === account.id ? "Reconnecting..." : "↻ Reconnect"}
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
@@ -1743,7 +1865,9 @@ export default function SettingsPage() {
                 )}
               </div>
             ) : smtpAccounts.length === 0 ? (
-              <div className="text-center py-6">
+              // min-height matches the provider-selection form so the card doesn't
+              // shrink in its default state and grow when "+ Connect" is clicked.
+              <div className="text-center flex flex-col items-center justify-center min-h-[216px]">
                 <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(105,98,196,0.08)" }}>
                   <svg className="w-6 h-6 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
