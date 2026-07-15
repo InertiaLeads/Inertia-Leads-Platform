@@ -31,3 +31,4 @@ export async function GET(request: Request) {
   // No code, or exchange failed — send back to login with an error flag.
   return NextResponse.redirect(`${origin}/login?error=auth_failed`);
 }
+
