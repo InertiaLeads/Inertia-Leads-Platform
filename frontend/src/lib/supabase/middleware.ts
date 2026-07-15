@@ -47,7 +47,12 @@ export async function updateSession(request: NextRequest) {
 
   // Redirect unauthenticated users to login (except for public routes)
   const publicRoutes = ["/login", "/signup", "/verify-email", "/forgot-password", "/reset-password", "/privacy", "/terms"];
-  const isPublicRoute = publicRoutes.includes(request.nextUrl.pathname) || request.nextUrl.pathname.startsWith("/audit");
+  // /auth/callback must be reachable without a session — it's where the OAuth
+  // code gets exchanged FOR the session. Blocking it recreates the login loop.
+  const isPublicRoute =
+    publicRoutes.includes(request.nextUrl.pathname) ||
+    request.nextUrl.pathname.startsWith("/audit") ||
+    request.nextUrl.pathname.startsWith("/auth/");
 
   if (!user && !isPublicRoute) {
     return redirectTo("/login");
