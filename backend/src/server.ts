@@ -61,6 +61,14 @@ app.get("/api/health", (_req, res) => {
 // Origin header. Protected by an HMAC-signed token in the URL.
 app.use("/api/unsubscribe", unsubscribeRouter);
 
+// Gmail OAuth callback — Google redirects the browser here (GET) with no Origin
+// header. Must be BEFORE CORS so it isn't rejected in production.
+// Protected by HMAC-signed state parameter.
+app.get("/api/gmail/callback", (req, res, next) => {
+  req.url = "/callback";
+  gmailRouter(req, res, next);
+});
+
 // Middleware
 const allowedOrigins = [
   "http://localhost:3000",
@@ -73,6 +81,7 @@ app.use(cors({
   origin(origin, callback) {
     // Allow requests with no origin ONLY in development (for curl/Postman)
     // In production, no-origin requests are blocked to prevent CSRF-like bypasses
+    // EXCEPTION: handled below for OAuth callbacks and webhook paths
     if (!origin) {
       if (process.env.NODE_ENV !== "production") {
         return callback(null, true);
@@ -87,6 +96,7 @@ app.use(cors({
   },
   credentials: true,
 }));
+
 app.use(express.json({
   limit: "1mb",
   verify: (req: any, _res, buf) => {
