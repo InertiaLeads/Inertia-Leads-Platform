@@ -50,7 +50,7 @@ export default function LockedFeatureModal() {
     footerText = "Your data is safe and waiting for you";
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed top-16 left-64 right-0 bottom-0 z-30 flex items-center justify-center">
       {/* Blurred backdrop */}
       <div className="absolute inset-0 backdrop-blur-sm bg-[#0d0a25]/60" />
 

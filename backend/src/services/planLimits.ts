@@ -298,11 +298,13 @@ export async function getUserPlan(userId: string): Promise<{
   emailsSentTodayResetAt: string;
   timezone: string;
 }> {
-  const { data, error } = await supabase
+  const initialFetch = await supabase
     .from("user_plans")
     .select("*")
     .eq("user_id", userId)
     .single();
+  const error = initialFetch.error;
+  let data = initialFetch.data;
 
   if (error || !data) {
     // Brand-new user: auto-start a 7-day free trial on the Growth plan (no card required).
@@ -312,7 +314,7 @@ export async function getUserPlan(userId: string): Promise<{
 
     // Try INSERT-only (ignoreDuplicates: true = ON CONFLICT DO NOTHING).
     // This creates a row for genuinely new users but NEVER overwrites existing data.
-    await supabase
+    const { error: trialInsertError } = await supabase
       .from("user_plans")
       .upsert({
         user_id: userId,
@@ -330,6 +332,12 @@ export async function getUserPlan(userId: string): Promise<{
         emails_sent_today_reset_at: new Date().toISOString(),
         timezone: "UTC",
       }, { onConflict: "user_id", ignoreDuplicates: true });
+
+    // Never swallow this: if the trial row can't be written, the user falls through
+    // to the "none"/starter fallback below and gets shown "Plan Expired" — surface why.
+    if (trialInsertError) {
+      console.error(`[getUserPlan] Failed to create trial row for new user ${userId}:`, trialInsertError.message);
+    }
 
     // Now re-SELECT — whether we just inserted or the row already existed
     const { data: plan2, error: err2 } = await supabase
@@ -392,6 +400,39 @@ export async function getUserPlan(userId: string): Promise<{
       emailsSentTodayResetAt: plan2.emails_sent_today_reset_at || new Date().toISOString(),
       timezone: tz,
     };
+  }
+
+  // Self-heal: a brand-new user whose row is still in the pristine, never-subscribed
+  // state should be auto-enrolled in the 7-day free trial. In some environments a
+  // default user_plans row can be created at signup (e.g. by a DB trigger) BEFORE this
+  // code first runs — in that case the insert branch above is skipped (a row already
+  // exists) and the user would otherwise be stuck on subscription_status='none', which
+  // the UI renders as "Plan Expired". Only heal genuinely fresh rows: never touch a
+  // user who has ever trialed, subscribed, or been billed.
+  if (
+    data.subscription_status === "none" &&
+    !data.trial_ends_at &&
+    !data.lemon_squeezy_subscription_id &&
+    !data.lemon_squeezy_customer_id
+  ) {
+    const trialEndsIso = new Date(Date.now() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const { data: healed, error: healErr } = await supabase
+      .from("user_plans")
+      .update({
+        plan: TRIAL_PLAN,
+        subscription_status: "trialing",
+        trial_ends_at: trialEndsIso,
+        is_active: true,
+      })
+      .eq("user_id", userId)
+      .eq("subscription_status", "none") // race guard: only heal if still untouched
+      .select("*")
+      .single();
+    if (healErr) {
+      console.error(`[getUserPlan] Failed to auto-enroll new user ${userId} into trial:`, healErr.message);
+    } else if (healed) {
+      data = healed;
+    }
   }
 
   // Daily counter expiry — resets at midnight in the user's timezone.
