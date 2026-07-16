@@ -17,6 +17,7 @@ function CustomSelect<T extends string>({
   searchEntries,
   disabled,
   className,
+  placeholder,
 }: {
   value: T;
   onChange: (val: T) => void;
@@ -24,6 +25,7 @@ function CustomSelect<T extends string>({
   searchEntries?: { value: T; label: string }[];
   disabled?: boolean;
   className?: string;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -45,7 +47,7 @@ function CustomSelect<T extends string>({
 
   // Display: use stored label if set, otherwise fall back to first match in entries or options
   const entries = searchEntries || options;
-  const displayLabel = selectedLabel || entries.find(o => o.value === value)?.label || options.find(o => o.value === value)?.label || "Select...";
+  const displayLabel = selectedLabel || entries.find(o => o.value === value)?.label || options.find(o => o.value === value)?.label || placeholder || "Select...";
 
   const filtered = search.trim()
     ? entries.filter(o => o.label.toLowerCase().includes(search.toLowerCase()))
@@ -1070,7 +1072,7 @@ export default function CampaignDetailPage() {
   const [generating, setGenerating] = useState(false);
   const [sending, setSending] = useState(false);
   const [enableFollowups, setEnableFollowups] = useState(true);
-  const [sendTimezone, setSendTimezone] = useState("US_EAST");
+  const [sendTimezone, setSendTimezone] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [showTzWarning, setShowTzWarning] = useState(false);
@@ -1115,7 +1117,7 @@ export default function CampaignDetailPage() {
       setLeads(data.leads);
       setEmails(data.emails);
       setEnableFollowups(data.campaign.enable_followups !== false);
-      setSendTimezone(data.campaign.send_timezone || "US_EAST");
+      setSendTimezone(data.campaign.settings_confirmed ? (data.campaign.send_timezone || "US_EAST") : "");
       setSettingsSaved(!!data.campaign.settings_confirmed);
 
       // Load call scripts from enriched_data
@@ -1402,6 +1404,7 @@ export default function CampaignDetailPage() {
                   options={TIMEZONE_OPTIONS}
                   searchEntries={TIMEZONE_SEARCH_ENTRIES}
                   disabled={savingSettings}
+                  placeholder="Select Timezone"
                 />
                 {/* Timezone warning card */}
                 {showTzWarning && (
@@ -1461,7 +1464,7 @@ export default function CampaignDetailPage() {
 
               <button
                 onClick={handleSaveSettings}
-                disabled={savingSettings || (enableFollowups === (campaign?.enable_followups !== false) && sendTimezone === (campaign?.send_timezone || "US_EAST"))}
+                disabled={savingSettings || !sendTimezone || (enableFollowups === (campaign?.enable_followups !== false) && sendTimezone === (campaign?.send_timezone || "US_EAST") && settingsSaved)}
                 className="px-3 py-[5px] text-[11px] font-semibold text-white/90 rounded-md transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90"
                 style={{ background: "linear-gradient(135deg, #7c3aed, #a78bfa)" }}
               >
