@@ -372,32 +372,62 @@ export async function getUserPlan(userId: string): Promise<{
       };
     }
 
+    // Self-heal in upsert branch: if the re-SELECT returned a row stuck at 'none'
+    // (e.g. a DB trigger created it before the upsert, so ignoreDuplicates skipped),
+    // auto-enroll into trial now. Same logic as the main-branch self-heal below.
+    let plan2Data = plan2;
+    if (
+      plan2Data.subscription_status === "none" &&
+      !plan2Data.trial_ends_at &&
+      !plan2Data.lemon_squeezy_subscription_id &&
+      !plan2Data.lemon_squeezy_customer_id
+    ) {
+      const healTrialEnds = new Date(Date.now() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      const { data: healed2, error: healErr2 } = await supabase
+        .from("user_plans")
+        .update({
+          plan: TRIAL_PLAN,
+          subscription_status: "trialing",
+          trial_ends_at: healTrialEnds,
+          is_active: true,
+        })
+        .eq("user_id", userId)
+        .eq("subscription_status", "none")
+        .select("*")
+        .maybeSingle();
+      if (healErr2) {
+        console.error(`[getUserPlan] Failed to auto-enroll new user (upsert branch) ${userId}:`, healErr2.message);
+      } else if (healed2) {
+        plan2Data = healed2;
+      }
+    }
+
     // Use the REAL data from the DB (preserves existing counters)
-    const tz = plan2.timezone || "UTC";
-    const subStatus = (plan2.subscription_status || "none") as SubscriptionStatus;
-    const trialEnds = plan2.trial_ends_at || null;
+    const tz = plan2Data.timezone || "UTC";
+    const subStatus = (plan2Data.subscription_status || "none") as SubscriptionStatus;
+    const trialEnds = plan2Data.trial_ends_at || null;
     return {
-      plan: plan2.plan as PlanTier,
-      serviceType: (plan2.service_type || "web_dev") as ServiceType,
+      plan: plan2Data.plan as PlanTier,
+      serviceType: (plan2Data.service_type || "web_dev") as ServiceType,
       subscriptionStatus: subStatus,
       trialEndsAt: trialEnds,
-      currentPeriodEnd: plan2.current_period_end || null,
-      currentPeriodStart: plan2.current_period_start || null,
-      pastDueSince: plan2.past_due_since || null,
+      currentPeriodEnd: plan2Data.current_period_end || null,
+      currentPeriodStart: plan2Data.current_period_start || null,
+      pastDueSince: plan2Data.past_due_since || null,
       isOnTrial: isTrialing(subStatus, trialEnds),
-      gmailConnectedAt: plan2.gmail_connected_at,
-      isActive: plan2.is_active,
-      leadsFoundThisMonth: plan2.leads_found_this_month || 0,
-      leadsFoundResetAt: plan2.leads_found_reset_at,
-      leadsFoundToday: isDailyCounterExpired(plan2.leads_found_today_reset_at, tz)
-        ? 0 : (plan2.leads_found_today || 0),
-      leadsFoundTodayResetAt: plan2.leads_found_today_reset_at || new Date().toISOString(),
-      emailsGeneratedToday: isDailyCounterExpired(plan2.emails_generated_today_reset_at, tz)
-        ? 0 : (plan2.emails_generated_today || 0),
-      emailsGeneratedTodayResetAt: plan2.emails_generated_today_reset_at || new Date().toISOString(),
-      emailsSentToday: isDailyCounterExpired(plan2.emails_sent_today_reset_at, tz)
-        ? 0 : (plan2.emails_sent_today || 0),
-      emailsSentTodayResetAt: plan2.emails_sent_today_reset_at || new Date().toISOString(),
+      gmailConnectedAt: plan2Data.gmail_connected_at,
+      isActive: plan2Data.is_active,
+      leadsFoundThisMonth: plan2Data.leads_found_this_month || 0,
+      leadsFoundResetAt: plan2Data.leads_found_reset_at,
+      leadsFoundToday: isDailyCounterExpired(plan2Data.leads_found_today_reset_at, tz)
+        ? 0 : (plan2Data.leads_found_today || 0),
+      leadsFoundTodayResetAt: plan2Data.leads_found_today_reset_at || new Date().toISOString(),
+      emailsGeneratedToday: isDailyCounterExpired(plan2Data.emails_generated_today_reset_at, tz)
+        ? 0 : (plan2Data.emails_generated_today || 0),
+      emailsGeneratedTodayResetAt: plan2Data.emails_generated_today_reset_at || new Date().toISOString(),
+      emailsSentToday: isDailyCounterExpired(plan2Data.emails_sent_today_reset_at, tz)
+        ? 0 : (plan2Data.emails_sent_today || 0),
+      emailsSentTodayResetAt: plan2Data.emails_sent_today_reset_at || new Date().toISOString(),
       timezone: tz,
     };
   }
@@ -427,7 +457,7 @@ export async function getUserPlan(userId: string): Promise<{
       .eq("user_id", userId)
       .eq("subscription_status", "none") // race guard: only heal if still untouched
       .select("*")
-      .single();
+      .maybeSingle();
     if (healErr) {
       console.error(`[getUserPlan] Failed to auto-enroll new user ${userId} into trial:`, healErr.message);
     } else if (healed) {

@@ -375,10 +375,18 @@ export default function SettingsPage() {
         setIsCancelling(false);
         setIsPastDue(false);
         setIsPaused(false);
-      } else if (data.subscriptionStatus === "expired" || data.subscriptionStatus === "cancelled" || data.subscriptionStatus === "none") {
-        // Fully expired, cancelled (period over), or no subscription
+      } else if (data.subscriptionStatus === "expired" || data.subscriptionStatus === "cancelled") {
+        // Fully expired or cancelled (period over)
         setHasPlan(false);
         setIsExpired(true);
+        setIsTrialExpired(false);
+        setIsCancelling(false);
+        setIsPastDue(false);
+        setIsPaused(false);
+      } else if (data.subscriptionStatus === "none") {
+        // No subscription yet (new user whose trial wasn't provisioned) — show "Get started" card
+        setHasPlan(false);
+        setIsExpired(false);
         setIsTrialExpired(false);
         setIsCancelling(false);
         setIsPastDue(false);
