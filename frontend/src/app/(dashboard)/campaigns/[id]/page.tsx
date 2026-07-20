@@ -8,6 +8,8 @@ import Loader from "../../Loader";
 import Pagination from "../../Pagination";
 import { usePlan } from "../../PlanContext";
 import LockedFeatureModal from "../../LockedFeatureModal";
+import SetupRequiredModal, { SetupRequiredType } from "../../SetupRequiredModal";
+import { createClient } from "@/lib/supabase/client";
 
 // ===== Custom Styled Dropdown =====
 function CustomSelect<T extends string>({
@@ -1071,6 +1073,7 @@ export default function CampaignDetailPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [sending, setSending] = useState(false);
+  const [setupModal, setSetupModal] = useState<SetupRequiredType | null>(null);
   const [enableFollowups, setEnableFollowups] = useState(true);
   const [sendTimezone, setSendTimezone] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
@@ -1152,6 +1155,19 @@ export default function CampaignDetailPage() {
 
   // Step 3: Generate Emails
   const handleGenerate = async () => {
+    // Email tone is personalized to the user's service. If they haven't picked one yet,
+    // prompt them to choose (in the popup) before generating.
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.user_metadata?.service_type_set !== true) {
+      setSetupModal("service");
+      return;
+    }
+    await runGenerate();
+  };
+
+  // Actual email generation — assumes a service has already been selected.
+  const runGenerate = async () => {
     setGenerating(true);
     generateProgress.start();
     try {
@@ -1186,7 +1202,24 @@ export default function CampaignDetailPage() {
 
   // Step 5: Start Campaign (send emails)
   const handleSend = async () => {
+    // Put the button into its loading state immediately so the click feels responsive
+    // during the inbox pre-check. We deliberately DON'T start the progress bar yet — that
+    // only belongs to real sending — but the spinning button avoids a "silent" 1-2s gap.
     setSending(true);
+    try {
+      const [gmail, smtp] = await Promise.all([
+        apiGet<{ accounts: unknown[] }>("/gmail/accounts"),
+        apiGet<{ accounts: unknown[] }>("/smtp/accounts"),
+      ]);
+      if ((gmail.accounts?.length || 0) + (smtp.accounts?.length || 0) === 0) {
+        setSending(false);
+        setSetupModal("inbox");
+        return;
+      }
+    } catch {
+      // If the check itself fails, fall through — the send attempt below surfaces the real error.
+    }
+
     sendProgress.start();
     try {
       const leadIdsToUse = selectedLeadIds.size > 0 ? Array.from(selectedLeadIds) : undefined;
@@ -1201,7 +1234,14 @@ export default function CampaignDetailPage() {
       await fetchCampaign();
     } catch (err) {
       sendProgress.cancel();
-      toast.addToast(err instanceof Error ? err.message : "Failed to send emails", "error");
+      const message = err instanceof Error ? err.message : "Failed to send emails";
+      // Backend rejects sending when no Gmail/SMTP inbox is connected — surface a
+      // themed "connect an inbox" prompt instead of a raw error toast.
+      if (/no email account connected|connect (an account|gmail or smtp)/i.test(message)) {
+        setSetupModal("inbox");
+      } else {
+        toast.addToast(message, "error");
+      }
     } finally {
       setSending(false);
     }
@@ -1368,6 +1408,13 @@ export default function CampaignDetailPage() {
   return (
     <div>
       <ToastContainer toasts={toast.toasts} removeToast={toast.removeToast} />
+      {setupModal && (
+        <SetupRequiredModal
+          type={setupModal}
+          onClose={() => setSetupModal(null)}
+          onServiceSaved={() => { void runGenerate(); }}
+        />
+      )}
       {detailLead && <LeadDetailModal lead={detailLead} onClose={() => setDetailLead(null)} canGenerateAudit={canGenerateAudit} />}
       {callScriptPreviewLeadId && (() => {
         const script = callScripts.find(s => s.lead_id === callScriptPreviewLeadId);
@@ -1557,7 +1604,14 @@ export default function CampaignDetailPage() {
                         className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-xl transition-all duration-200 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer hover:scale-[1.05] hover:brightness-110 hover:-translate-y-0.5"
                         style={{ background: "linear-gradient(135deg, #6962c4, #a78bfa)", boxShadow: "0 4px 20px rgba(105,98,196,0.35)" }}
                       >
-                        <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                        {sending ? (
+                          <svg className="w-4 h-4 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                        )}
                         <span className="text-white">{sending ? "Sending..." : `Send to ${new Set(selectedPendingEmails.map(e => e.lead_id)).size} Selected`}</span>
                       </button>
                     )}

@@ -308,6 +308,18 @@ export default function SettingsPage() {
     }
   }, []);
 
+  // Deep-link support: /settings#service or /settings#inbox scrolls to that card.
+  // Cards load their data async, so wait a beat for them to render before scrolling.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash.replace("#", "");
+    if (hash !== "service" && hash !== "inbox") return;
+    const timer = setTimeout(() => {
+      document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 400);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     fetchAccounts();
     // Load current name from Supabase user metadata
@@ -326,15 +338,22 @@ export default function SettingsPage() {
     };
     loadProfile();
     // Load service type and subscription status from stats
-    apiGet<{ serviceType?: string; subscriptionStatus?: string; isOnTrial?: boolean; trialDaysLeft?: number; currentPeriodEnd?: string; currentPeriodStart?: string }>("/stats").then((data) => {
-      if (data.serviceType) {
+    apiGet<{ serviceType?: string; subscriptionStatus?: string; isOnTrial?: boolean; trialDaysLeft?: number; currentPeriodEnd?: string; currentPeriodStart?: string }>("/stats").then(async (data) => {
+      // A brand-new user has NOT chosen a service yet — even though the DB carries a
+      // "web_dev" fallback, we must not pre-select it for them. Only show a selected
+      // service once they've explicitly picked one (tracked by the service_type_set flag).
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      const serviceChosen = user?.user_metadata?.service_type_set === true;
+      if (serviceChosen && data.serviceType) {
         // Migrate deprecated social_media to digital_marketing
         const mapped = data.serviceType === "social_media" ? "digital_marketing" : data.serviceType;
         setServiceType(mapped);
         setSavedServiceType(mapped);
       } else {
-        setServiceType("web_dev");
-        setSavedServiceType("web_dev");
+        // Not chosen yet — start with nothing selected so the user must actively pick.
+        setServiceType("");
+        setSavedServiceType("");
       }
       // Set plan/trial status
       setIsOnTrial(data.isOnTrial || false);
@@ -759,7 +778,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Right: Service Type Selector */}
-          <div className="flex-shrink-0 rounded-2xl p-5" style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(16px)", border: "1px solid rgba(255,255,255,0.1)" }}>
+          <div id="service" className="flex-shrink-0 rounded-2xl p-5 scroll-mt-24" style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(16px)", border: "1px solid rgba(255,255,255,0.1)" }}>
             <div className="flex items-center justify-between mb-4 gap-6">
               <div>
                 <span className="text-sm font-bold text-white">Your Service</span>
@@ -1583,7 +1602,7 @@ export default function SettingsPage() {
         )}
 
         {/* Gmail Card */}
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden" style={{ border: "1px solid rgba(47,39,108,0.4)" }}>
+        <div id="inbox" className="bg-white rounded-2xl shadow-sm overflow-hidden scroll-mt-24" style={{ border: "1px solid rgba(47,39,108,0.4)" }}>
           <div className="px-6 py-4 border-b" style={{ background: "#2f276c", borderColor: "#2f276c" }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
