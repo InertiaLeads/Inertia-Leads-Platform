@@ -2,7 +2,6 @@ import nodemailer from "nodemailer";
 import supabase from "./supabase";
 import logger from "../utils/logger";
 import { encrypt, decrypt } from "../utils/encryption";
-import { buildEmailParts } from "../utils/emailFormat";
 
 // =============================================
 // SMTP Account Management
@@ -219,24 +218,16 @@ export async function sendViaSMTP(
     ? `"${safeName}" <${account.email}>`
     : account.email;
 
-  // List-Unsubscribe + one-click (RFC 8058) — native "Unsubscribe" button + bulk-sender compliance.
-  const unsubHeaders = listUnsubscribeUrl
-    ? {
-        "List-Unsubscribe": `<${listUnsubscribeUrl.replace(/[\r\n]/g, "")}>`,
-        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-      }
-    : undefined;
-
-  // Plain-text + HTML parts (HTML renders the unsubscribe URL as a clickable "Unsubscribe").
-  const { text, html } = buildEmailParts(body, listUnsubscribeUrl);
+  // Plain-text only — no HTML, no List-Unsubscribe header — so the email reads like
+  // a personal 1:1 message and lands in Primary, not Promotions. (nodemailer
+  // RFC 2047-encodes the subject automatically.)
+  const text = body.trimEnd();
 
   const result = await transporter.sendMail({
     from: fromAddress,
     to: safeTo,
     subject: safeSubject,
     text,
-    html,
-    headers: unsubHeaders,
   });
 
   transporter.close();

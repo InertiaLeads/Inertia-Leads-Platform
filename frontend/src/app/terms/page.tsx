@@ -93,14 +93,13 @@ export default function TermsOfServicePage() {
               {/* Section 3 */}
               <div>
                 <h2 className="text-lg font-semibold text-white mb-3">3. Free Trial</h2>
-                <p className="mb-3">We offer a 7-day free trial on all subscription plans. The following conditions apply to free trials:</p>
+                <p className="mb-3">We offer a 7-day free trial that begins automatically when you create an account. No payment method is required to start the trial. The following conditions apply:</p>
                 <ul className="list-disc list-inside space-y-2 ml-1">
-                  <li>A valid payment method is required to start a free trial. Your card will be saved but not charged during the trial period</li>
-                  <li>You will have access to the features of your selected plan during the trial period</li>
-                  <li>You will receive a reminder notification approximately 2 days before your trial ends</li>
-                  <li>If you do not cancel before the trial period ends, you will be automatically charged the full subscription price for your selected plan on day 8</li>
-                  <li>You may cancel your trial at any time before the trial period ends without being charged</li>
-                  <li>Free trials are available once per person and once per payment method. We reserve the right to deny trial access to accounts we believe are attempting to abuse the trial policy</li>
+                  <li>The free trial starts immediately upon account creation and lasts for 7 calendar days — no credit card or payment method is required</li>
+                  <li>During the trial you will have access to Growth plan features with reduced daily limits</li>
+                  <li>When the trial ends, all paid features will be locked until you choose a subscription plan and provide a valid payment method</li>
+                  <li>No automatic charges will occur at the end of the trial — you must actively select and pay for a plan to continue using paid features</li>
+                  <li>Free trials are available once per person. We reserve the right to deny trial access to accounts we believe are attempting to abuse the trial policy</li>
                   <li>We reserve the right to modify or discontinue the free trial offer at any time without notice to new signups</li>
                 </ul>
               </div>
@@ -172,7 +171,7 @@ export default function TermsOfServicePage() {
                     </tbody>
                   </table>
                 </div>
-                <p className="mt-3">All emails sent through our Service automatically include an unsubscribe option. You must not remove, disable, circumvent, or tamper with this feature. You must honour all unsubscribe requests promptly and maintain a suppression list of opted-out recipients.</p>
+                <p className="mt-3">All emails sent through our Service include a clear opt-out mechanism: recipients can opt out at any time by replying to the email (for example, with &ldquo;STOP&rdquo;). You must not remove, disable, or tamper with the opt-out instructions included in your emails. You must honour all opt-out requests promptly, must not contact anyone who has opted out, and must maintain a suppression list of opted-out recipients.</p>
                 <p className="mt-3">We reserve the right to suspend accounts that generate excessive spam complaints, bounce rates above 5%, or that we reasonably believe are violating applicable email laws.</p>
               </div>
 
@@ -212,7 +211,7 @@ export default function TermsOfServicePage() {
                   <li>Cancellation takes effect at the end of your current billing period. You will retain full access to all your plan features until that date</li>
                   <li>No partial refunds or credits will be issued for the remaining days in your current billing cycle upon cancellation</li>
                   <li>Once the billing period ends, your account will lose access to paid features and you will not be charged again unless you resubscribe</li>
-                  <li>Cancelling during a free trial before the trial ends incurs no charge</li>
+                  <li>Cancelling during the free trial incurs no charge as no payment method is collected during the trial</li>
                   <li>You may resubscribe at any time by selecting a new plan from your account Settings</li>
                 </ul>
 

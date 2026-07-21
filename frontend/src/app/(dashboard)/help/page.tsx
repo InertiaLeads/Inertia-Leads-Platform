@@ -76,7 +76,7 @@ const faqs: FAQ[] = [
     category: "Email & Campaigns",
     question: "How do I avoid my emails going to spam?",
     answer:
-      "We handle this automatically with email warmup, send rate limiting, and personalized content. On your end: use a professional email address, keep your messages relevant and non-spammy, and always include an unsubscribe option. Avoid ALL CAPS, excessive links, and spam trigger words.",
+      "We handle a lot of this automatically: emails are sent as plain text (so they read like a personal message and stay out of the Promotions tab), with send rate limiting, warm-up, personalized content, and a built-in opt-out line recipients can reply to. On your end: use a professional email address, keep your messages relevant and non-spammy, honour any opt-out requests promptly, and avoid ALL CAPS, excessive links, and spam trigger words.",
   },
   {
     category: "Email & Campaigns",

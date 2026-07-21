@@ -3,7 +3,6 @@ import { sendEmailUnified, getInboxSentTodayUnified, getPrimaryEmailAccountId, g
 import { isWithinSendWindow } from "../routes/send";
 import { getDailyLimit, GMAIL_INBOX_CAP, getUserPlan, incrementEmailsSentToday } from "../services/planLimits";
 import { isSuppressed } from "../services/suppression";
-import { buildUnsubscribeUrl } from "../utils/unsubscribe";
 import logger from "../utils/logger";
 import crypto from "crypto";
 
@@ -180,8 +179,7 @@ async function sendSingleEmail(
     accountInfo.type,
     email.to_email,
     email.subject,
-    email.body,
-    buildUnsubscribeUrl(campaign.user_id, email.to_email)
+    email.body
   );
 
   if (!result.success) {

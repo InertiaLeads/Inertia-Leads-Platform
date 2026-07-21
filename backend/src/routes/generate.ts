@@ -6,7 +6,6 @@ import openai from "../services/openai";
 import { checkDailyGenerationLimit, PLAN_CONFIGS, getUserPlan, reserveGenerationsToday, releaseGenerationsToday, ServiceType, getFeatureAccess } from "../services/planLimits";
 import { getPageSpeedScores } from "../services/pageSpeed";
 import { getLanguageName } from "../utils/languageDetection";
-import { buildUnsubscribeUrl } from "../utils/unsubscribe";
 import { getSuppressedEmails } from "../services/suppression";
 import logger from "../utils/logger";
 
@@ -79,20 +78,21 @@ function pickTone(): ToneKey {
 
 // Opt-out line variants — rotated per email so the closing isn't a byte-identical
 // signature across a whole campaign (an identical footer is a strong bulk fingerprint).
-// Each carries the recipient's one-click unsubscribe link (CAN-SPAM compliance).
-// The URL is rendered as a clickable "Unsubscribe" word in the HTML email, so the
-// intro deliberately omits the word "unsubscribe" (it would otherwise read twice).
+// Plain "reply STOP" opt-out (no link, no List-Unsubscribe header, no HTML) so the
+// email reads like a personal 1:1 message and lands in Primary, not Promotions.
+// NOTE: STOP replies are NOT auto-suppressed — the sender must honor them manually
+// (or add the address via the suppression list). See docs before scaling volume.
 const OPT_OUT_VARIANTS = [
-  (url: string) => `Not relevant? ${url}`,
-  (url: string) => `If this isn't for you: ${url}`,
-  (url: string) => `Rather not get these? ${url}`,
-  (url: string) => `Not interested? ${url}`,
-  (url: string) => `Prefer I stop reaching out? ${url}`,
+  () => `Not relevant? Just reply "STOP" and I won't follow up.`,
+  () => `If this isn't for you, reply "STOP" and I'll leave you be.`,
+  () => `Rather not get these? A quick "STOP" reply and I'm out of your inbox.`,
+  () => `Not interested? Just reply "STOP".`,
+  () => `Prefer I stop reaching out? Reply "STOP".`,
 ];
 
-// Append the opt-out line (with the recipient's unsubscribe link) to the email body.
-function appendOptOut(body: string, unsubscribeUrl: string): string {
-  const optOut = OPT_OUT_VARIANTS[Math.floor(Math.random() * OPT_OUT_VARIANTS.length)](unsubscribeUrl);
+// Append the plain-text opt-out line to the email body.
+function appendOptOut(body: string): string {
+  const optOut = OPT_OUT_VARIANTS[Math.floor(Math.random() * OPT_OUT_VARIANTS.length)]();
   return body.trimEnd() + "\n\n" + optOut;
 }
 
@@ -629,7 +629,6 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
     // Generate emails in parallel batches of 5
     const results = await processBatch(sendableLeads, PARALLEL_BATCH_SIZE, async (lead) => {
       const tone = pickTone();
-      const unsubUrl = buildUnsubscribeUrl(req.userId!, lead.email);
       const hasNoWebsite = !lead.website || !lead.website.startsWith("http");
       const enrichedData = lead.enriched_data || {};
       const hasBrokenWebsite = !hasNoWebsite && (enrichedData._siteDown === true || (!enrichedData.title && !enrichedData.description && (!enrichedData.technologies || enrichedData.technologies.length === 0)));
@@ -656,7 +655,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
               user_id: req.userId,
               to_email: lead.email,
               subject: emailData.subject,
-              body: appendOptOut(appendSignature(emailData.body, senderSignature), unsubUrl),
+              body: appendOptOut(appendSignature(emailData.body, senderSignature)),
               status: "pending",
               sequence_step: 1,
               tone_variant: tone,
@@ -831,7 +830,6 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
     // Generate emails in parallel batches of 5
     const results = await processBatch(sendableLeads, PARALLEL_BATCH_SIZE, async (lead) => {
       const enrichedData = lead.enriched_data || {};
-      const unsubUrl = buildUnsubscribeUrl(req.userId!, lead.email);
       const summary = enrichedData.summary || lead.company;
       const issues = (enrichedData.issues || []).slice(0, 2).join(", ");
       const tone = pickTone();
@@ -1003,7 +1001,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
               user_id: req.userId,
               to_email: lead.email,
               subject: emailData.subject,
-              body: appendOptOut(appendSignature(emailData.body, senderSignature), unsubUrl),
+              body: appendOptOut(appendSignature(emailData.body, senderSignature)),
               status: "pending",
               sequence_step: 1,
               scheduled_at: null,
@@ -1034,7 +1032,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
                           user_id: req.userId,
                           to_email: lead.email,
                           subject: f1Data.subject,
-                          body: appendOptOut(appendSignature(f1Data.body, senderSignature), unsubUrl),
+                          body: appendOptOut(appendSignature(f1Data.body, senderSignature)),
                           status: "pending",
                           sequence_step: 2,
                           scheduled_at: calculateFollowUpDate(2, 4),
@@ -1065,7 +1063,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
                           user_id: req.userId,
                           to_email: lead.email,
                           subject: f2Data.subject,
-                          body: appendOptOut(appendSignature(f2Data.body, senderSignature), unsubUrl),
+                          body: appendOptOut(appendSignature(f2Data.body, senderSignature)),
                           status: "pending",
                           sequence_step: 3,
                           scheduled_at: calculateFollowUpDate(5, 7),

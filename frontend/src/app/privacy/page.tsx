@@ -430,7 +430,7 @@ export default function PrivacyPolicyPage() {
                     </tbody>
                   </table>
                 </div>
-                <p className="mt-3">All outbound emails generated through our platform automatically include an unsubscribe option. We strongly encourage all users to respect opt-out requests immediately and maintain suppression lists. Inertia Leads reserves the right to suspend accounts that are reported for spam or that violate applicable email laws.</p>
+                <p className="mt-3">All outbound emails generated through our platform include a clear opt-out mechanism, allowing recipients to opt out at any time by replying to the email (for example, with &ldquo;STOP&rdquo;). We strongly encourage all users to respect opt-out requests immediately and maintain suppression lists. Inertia Leads reserves the right to suspend accounts that are reported for spam or that violate applicable email laws.</p>
               </div>
 
               {/* Section 12 */}
