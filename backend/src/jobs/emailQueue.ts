@@ -1,7 +1,7 @@
 import supabase from "../services/supabase";
 import { sendEmailUnified, getInboxSentTodayUnified, getPrimaryEmailAccountId, getAccountInfo, buildAccountAssignment } from "../services/emailRouter";
 import { isWithinSendWindow } from "../routes/send";
-import { getDailyLimit, GMAIL_INBOX_CAP, getUserPlan, incrementEmailsSentToday } from "../services/planLimits";
+import { getDailyLimit, getInboxDailyLimit, GMAIL_INBOX_CAP, getUserPlan, incrementEmailsSentToday } from "../services/planLimits";
 import { isSuppressed } from "../services/suppression";
 import logger from "../utils/logger";
 import crypto from "crypto";
@@ -51,12 +51,30 @@ async function claimEmail(emailId: string): Promise<boolean> {
   return !!(data && data.length > 0);
 }
 
-// Release a claim we couldn't actually act on (no inbox connected, inbox at cap):
-// put it back to pending so a later cycle can try again.
+// Release a claim we couldn't actually act on (no inbox connected):
+// put it back to pending so a later cycle can try again immediately.
 async function revertClaim(emailId: string): Promise<void> {
   await supabase
     .from("emails")
     .update({ status: "pending", claimed_at: null })
+    .eq("id", emailId)
+    .eq("status", "sending");
+}
+
+// Midnight (UTC) tonight → when per-inbox daily counts reset (getInboxSentToday uses UTC).
+function nextUtcMidnight(): Date {
+  const d = new Date();
+  d.setUTCHours(24, 0, 0, 0); // rolls to 00:00 UTC of the next day
+  return d;
+}
+
+// Defer a claimed email to a future time (used when its inbox hit its daily warmup cap):
+// release the claim AND push scheduled_at forward so the queue won't re-pick it until then.
+// This avoids claim/revert churn every cycle for emails whose inbox is full for the day.
+async function deferClaim(emailId: string, until: Date): Promise<void> {
+  await supabase
+    .from("emails")
+    .update({ status: "pending", claimed_at: null, scheduled_at: until.toISOString() })
     .eq("id", emailId)
     .eq("status", "sending");
 }
@@ -165,12 +183,17 @@ async function sendSingleEmail(
       .eq("id", email.id);
   }
 
-  // Per-inbox safety cap (450/inbox/day)
+  // Per-inbox cap: the smaller of THIS inbox's own warmup limit and the absolute Gmail
+  // safety cap (450). Each inbox ramps on its own activity, so a freshly-added secondary
+  // inbox starts at week-1 pace even on an already-warmed account. If the inbox is full
+  // for the day, defer to the next UTC midnight (when per-inbox counts reset) instead of
+  // churning claim/revert every cycle.
   const inboxSent = await getInboxSentTodayUnified(accountInfo.id, accountInfo.type);
-  if (inboxSent >= GMAIL_INBOX_CAP) {
-    // Inbox at its daily cap — release the claim so it can send later / from another inbox.
-    await revertClaim(email.id);
-    logger.info({ inboxId: accountInfo.id, accountType: accountInfo.type, inboxSent, cap: GMAIL_INBOX_CAP }, "Inbox hit cap, skipping");
+  const inboxWarmupCap = await getInboxDailyLimit(campaign.user_id, accountInfo.id, accountInfo.type);
+  const inboxCap = Math.min(inboxWarmupCap, GMAIL_INBOX_CAP);
+  if (inboxSent >= inboxCap) {
+    await deferClaim(email.id, nextUtcMidnight());
+    logger.info({ inboxId: accountInfo.id, accountType: accountInfo.type, inboxSent, cap: inboxCap }, "Inbox hit warmup/safety cap — deferring to tomorrow");
     return false;
   }
 

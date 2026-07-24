@@ -8,6 +8,13 @@ import logger from "../utils/logger";
 
 const router = Router();
 
+// Cache for the benchmark sample set. The public audit view computes an "industry
+// average health" comparison from up to 5000 leads; without this cache that scan runs
+// on EVERY page view (a cost/DoS vector on an unauthenticated endpoint). Refreshes
+// hourly and is per-instance (fine at a single Railway replica).
+let benchmarkRowsCache: { rows: { id: string; industry: string | null; score: number | null }[]; expiresAt: number } | null = null;
+const BENCHMARK_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
 // POST /api/audit/generate — Generate an audit report token for a lead
 // Requires auth — only the lead owner can generate audit links
 router.post("/generate", authMiddleware, async (req: AuthenticatedRequest, res) => {
@@ -337,14 +344,23 @@ router.get("/:token", async (req, res) => {
     let ed = lead.enriched_data || {};
     const serviceType = ed.audit_service_type || "web_dev";
 
-    // Fetch PageSpeed in background if not yet stored (only for web_dev and seo)
-    // Don't block the response — prospect sees the report immediately, PageSpeed loads on next visit
-    if ((serviceType === "web_dev" || serviceType === "seo") && !ed.pageSpeed && lead.website && !ed._siteDown && !ed.isParkedDomain) {
+    // Fetch PageSpeed in background if not yet stored (only for web_dev and seo).
+    // Don't block the response — prospect sees the report immediately, PageSpeed loads on next visit.
+    // Cooldown: attempt at most once per 24h per lead, even on failure. This is a PUBLIC
+    // endpoint — without the cooldown, a site that reliably fails PageSpeed would re-fire the
+    // paid Google API on every single view.
+    const PAGESPEED_RETRY_MS = 24 * 60 * 60 * 1000;
+    const pageSpeedLastTried = ed.pageSpeedTriedAt ? new Date(ed.pageSpeedTriedAt).getTime() : 0;
+    if ((serviceType === "web_dev" || serviceType === "seo") && !ed.pageSpeed && lead.website && !ed._siteDown && !ed.isParkedDomain
+        && (Date.now() - pageSpeedLastTried > PAGESPEED_RETRY_MS)) {
       logger.info({ website: lead.website, leadId: lead.id }, "Fetching PageSpeed in background for audit view");
+      // Record the attempt immediately so rapid/concurrent views don't each trigger a fetch.
+      const edWithAttempt = { ...ed, pageSpeedTriedAt: new Date().toISOString() };
+      supabase.from("leads").update({ enriched_data: edWithAttempt }).eq("id", lead.id).then(() => {});
       getPageSpeedScores(lead.website).then(pageSpeedData => {
         if (pageSpeedData) {
           supabase.from("leads")
-            .update({ enriched_data: { ...ed, pageSpeed: pageSpeedData } })
+            .update({ enriched_data: { ...edWithAttempt, pageSpeed: pageSpeedData } })
             .eq("id", lead.id)
             .then(() => {});
         }
@@ -369,12 +385,20 @@ router.get("/:token", async (req, res) => {
     try {
       const { canonicalIndustry } = await import("../services/industryGroups");
 
-      const { data: rows } = await supabase
-        .from("leads")
-        .select("industry, score")
-        .gt("score", 0)
-        .neq("id", lead.id)
-        .limit(BENCHMARK_SAMPLE_CAP);
+      // Use a cached sample set so this doesn't scan up to 5000 rows on every public view.
+      const nowMs = Date.now();
+      let allRows = benchmarkRowsCache && benchmarkRowsCache.expiresAt > nowMs ? benchmarkRowsCache.rows : null;
+      if (!allRows) {
+        const { data } = await supabase
+          .from("leads")
+          .select("id, industry, score")
+          .gt("score", 0)
+          .limit(BENCHMARK_SAMPLE_CAP);
+        allRows = data || [];
+        benchmarkRowsCache = { rows: allRows, expiresAt: nowMs + BENCHMARK_CACHE_TTL };
+      }
+      // Exclude the current lead from its own benchmark (done in-memory since rows are cached).
+      const rows = allRows.filter((r) => r.id !== lead.id);
 
       if (rows && rows.length > 0) {
         const avgHealthFromScores = (scores: number[]): number => {

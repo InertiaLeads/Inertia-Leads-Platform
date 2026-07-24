@@ -55,6 +55,7 @@ export default function HotLeadsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "replied" | "not-contacted">("all");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<"latest" | "most-viewed">("latest");
   const [page, setPage] = useState(1);
 
   useEffect(() => {
@@ -84,13 +85,20 @@ export default function HotLeadsPage() {
         l.campaignName.toLowerCase().includes(q)
       );
     }
-    return result;
-  }, [hotLeads, filter, search]);
+    // Sort — copy first so we never mutate the source array. "latest" (default) puts the
+    // most recently active leads on top (what a hot-leads action list should show first);
+    // "most-viewed" ranks by all-time view count. Each falls back to the other as a tiebreaker.
+    const byLatest = (a: HotLead, b: HotLead) => new Date(b.lastViewed).getTime() - new Date(a.lastViewed).getTime();
+    const byViews = (a: HotLead, b: HotLead) => b.totalViews - a.totalViews;
+    return [...result].sort((a, b) =>
+      sort === "most-viewed" ? (byViews(a, b) || byLatest(a, b)) : (byLatest(a, b) || byViews(a, b))
+    );
+  }, [hotLeads, filter, search, sort]);
 
   const paginatedLeads = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
 
-  // Reset page when filter/search changes
-  useEffect(() => { setPage(1); }, [filter, search]);
+  // Reset page when filter/search/sort changes
+  useEffect(() => { setPage(1); }, [filter, search, sort]);
 
   // Show locked modal if user hasn't set up subscription
   if (plan.loaded && !plan.canAccessFeatures) {
@@ -124,7 +132,7 @@ export default function HotLeadsPage() {
             <span className="text-xs font-medium text-gray-300">Engagement Tracker</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-bold text-white">Hot Leads</h1>
-          <p className="mt-2 text-sm" style={{ color: 'rgba(255,255,255,0.5)' }}>Leads who opened their audit report — sorted by engagement</p>
+          <p className="mt-2 text-sm" style={{ color: 'rgba(255,255,255,0.5)' }}>Leads who opened their audit report — newest activity first</p>
         </div>
       </div>
 
@@ -189,16 +197,44 @@ export default function HotLeadsPage() {
           </button>
         ))}
         <span className="text-sm text-gray-400 ml-3">{filtered.length} leads</span>
-        <div className="ml-auto relative">
-          <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search leads..."
-            className="pl-9 pr-4 py-2 text-sm bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[#6962c4]/20 focus:border-[#6962c4] w-64"
-            style={{ border: '1px solid rgba(47, 39, 108, 0.3)' }}
-          />
+        <div className="ml-auto flex items-center gap-2">
+          {/* Sort toggle — segmented control; "Latest" (most recent activity) is the default */}
+          <div className="inline-flex items-center gap-1 rounded-full p-1 ring-1 ring-[#2f276c]/10" style={{ background: 'rgba(47, 39, 108, 0.06)' }}>
+            {([
+              { key: "latest" as const, label: "Latest", icon: (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              ) },
+              { key: "most-viewed" as const, label: "Most viewed", icon: (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+              ) },
+            ]).map((s) => {
+              const active = sort === s.key;
+              return (
+                <button
+                  key={s.key}
+                  onClick={() => setSort(s.key)}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full transition-all duration-200 ${
+                    active ? "text-white shadow-md" : "text-[#6b6790] hover:text-[#3d3580]"
+                  }`}
+                  style={active ? { background: 'linear-gradient(135deg, #3d3580, #6962c4)', boxShadow: '0 4px 12px rgba(105, 98, 196, 0.35)' } : undefined}
+                >
+                  {s.icon}
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="relative">
+            <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search leads..."
+              className="pl-9 pr-4 py-2 text-sm bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[#6962c4]/20 focus:border-[#6962c4] w-64"
+              style={{ border: '1px solid rgba(47, 39, 108, 0.3)' }}
+            />
+          </div>
         </div>
       </div>
 

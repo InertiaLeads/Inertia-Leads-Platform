@@ -121,6 +121,20 @@ async function getSenderSignature(userId: string): Promise<string> {
   }
 }
 
+// True only when the sender's CAN-SPAM footer fields are present (full name + business
+// address). Used to HARD-BLOCK email generation server-side, so the required sender
+// identity can't be omitted even by calling the API directly (frontend gate backstop).
+async function isSenderProfileComplete(userId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.auth.admin.getUserById(userId);
+    if (error || !data?.user) return false;
+    const meta = (data.user.user_metadata || {}) as Record<string, string>;
+    return !!(meta.full_name || "").trim() && !!(meta.business_address || "").trim();
+  } catch {
+    return false;
+  }
+}
+
 // Append the sender's signature block to the body (placed before the opt-out line).
 function appendSignature(body: string, signature: string): string {
   if (!signature) return body;
@@ -541,6 +555,17 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       return;
     }
 
+    // Block generation until the sender's CAN-SPAM footer fields exist (name + business
+    // address) — every email embeds this signature. Un-bypassable backend counterpart to
+    // the frontend profile gate.
+    if (!(await isSenderProfileComplete(req.userId!))) {
+      res.status(403).json({
+        error: "Complete your profile (full name and business address) in Settings before generating emails — it's required on every email for CAN-SPAM compliance.",
+        code: "PROFILE_INCOMPLETE",
+      });
+      return;
+    }
+
     // Check daily generation limit (OpenAI cost protection)
     const genCheck = await checkDailyGenerationLimit(req.userId!);
     if (!genCheck.allowed) {
@@ -717,6 +742,17 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
 
     if (!campaignId) {
       res.status(400).json({ error: "Campaign ID is required" });
+      return;
+    }
+
+    // Block generation until the sender's CAN-SPAM footer fields exist (name + business
+    // address) — every email embeds this signature. Un-bypassable backend counterpart to
+    // the frontend profile gate.
+    if (!(await isSenderProfileComplete(req.userId!))) {
+      res.status(403).json({
+        error: "Complete your profile (full name and business address) in Settings before generating emails — it's required on every email for CAN-SPAM compliance.",
+        code: "PROFILE_INCOMPLETE",
+      });
       return;
     }
 
@@ -1178,8 +1214,28 @@ router.post("/call-scripts", authMiddleware, async (req: AuthenticatedRequest, r
 
     const validLeads = leads.filter(l => l.company && l.company.trim().length >= 2);
 
-    // Cap to remaining daily generation slots
-    const cappedLeads = validLeads.slice(0, genCheck.remaining);
+    // Skip leads that already have a call script — never regenerate. This makes the
+    // endpoint idempotent and stops it being looped to re-bill GPT-4o for the same leads.
+    const pendingLeads = validLeads.filter(l => !(l.enriched_data && l.enriched_data.call_script));
+    if (pendingLeads.length === 0) {
+      res.json({ message: "Call scripts already generated for these leads", count: 0, scripts: [] });
+      return;
+    }
+
+    // Atomically RESERVE generation quota BEFORE the paid OpenAI work (race-safe),
+    // exactly like /generate and /advanced. Without this the daily cap never depletes
+    // and the endpoint could be looped to run up unbounded OpenAI spend.
+    const granted = await reserveGenerationsToday(req.userId!, pendingLeads.length, genCheck.dailyLimit);
+    if (granted <= 0) {
+      res.status(403).json({
+        error: `Daily AI generation limit reached (${genCheck.usedToday}/${genCheck.dailyLimit} on ${genCheck.plan} plan). Try again tomorrow.`,
+        usedToday: genCheck.usedToday,
+        dailyLimit: genCheck.dailyLimit,
+        plan: genCheck.plan,
+      });
+      return;
+    }
+    const cappedLeads = pendingLeads.slice(0, granted);
 
     // Generate call scripts in parallel batches of 5
     const scripts = await processBatch(cappedLeads, PARALLEL_BATCH_SIZE, async (lead) => {
@@ -1228,10 +1284,17 @@ router.post("/call-scripts", authMiddleware, async (req: AuthenticatedRequest, r
       return null;
     });
 
+    // Reconcile: give back any reserved slots we didn't actually use (failed generations),
+    // so failures don't permanently consume the user's daily quota.
+    const successful = scripts.filter(Boolean);
+    if (granted > successful.length) {
+      await releaseGenerationsToday(req.userId!, granted - successful.length);
+    }
+
     res.json({
       message: "Call scripts generated",
-      count: scripts.length,
-      scripts,
+      count: successful.length,
+      scripts: successful,
     });
   } catch {
     res.status(500).json({ error: "Failed to generate call scripts" });

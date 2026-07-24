@@ -555,6 +555,20 @@ async function getWarmupInfo(userId: string, gmailConnectedAt: string | null): P
 }
 
 // =============================================
+// Map a warmup-day count → that day's send limit for a plan.
+// Ramp: week 1 (days 0–7) → warmup[0], week 2 (8–14) → warmup[1],
+// week 3 (15–21) → warmup[2], week 4+ → steady-state maxDailyEmails.
+// Shared by BOTH the account-level total limit (getDailyLimit) and each inbox's
+// own per-inbox limit (getInboxDailyLimit), so the ramp stays consistent.
+// =============================================
+function warmupLimitForDay(config: PlanConfig, warmupDay: number): { limit: number; warmupComplete: boolean } {
+  if (warmupDay <= 7) return { limit: config.warmup[0], warmupComplete: false };
+  if (warmupDay <= 14) return { limit: config.warmup[1], warmupComplete: false };
+  if (warmupDay <= 21) return { limit: config.warmup[2], warmupComplete: false };
+  return { limit: config.maxDailyEmails, warmupComplete: true };
+}
+
+// =============================================
 // Get today's daily email limit for a user
 // =============================================
 export async function getDailyLimit(userId: string): Promise<{
@@ -605,23 +619,10 @@ export async function getDailyLimit(userId: string): Promise<{
     };
   }
 
-  let limit: number;
-  let warmupComplete = false;
-
-  if (warmupDay <= 7) {
-    // Week 1
-    limit = config.warmup[0];
-  } else if (warmupDay <= 14) {
-    // Week 2
-    limit = config.warmup[1];
-  } else if (warmupDay <= 21) {
-    // Week 3
-    limit = config.warmup[2];
-  } else {
-    // Week 4+ — steady state
-    limit = config.maxDailyEmails;
-    warmupComplete = true;
-  }
+  // Map the user's warmup day → this week's total daily limit (shared ramp logic).
+  const warmupResult = warmupLimitForDay(config, warmupDay);
+  let limit = warmupResult.limit;
+  const warmupComplete = warmupResult.warmupComplete;
 
   // During trial: cap sending at trial limit (warmup still applies if lower)
   const effectiveMaxCap = userPlan.isOnTrial ? TRIAL_DAILY_EMAILS : config.maxDailyEmails;
@@ -635,6 +636,66 @@ export async function getDailyLimit(userId: string): Promise<{
     warmupPaused,
     maxCap: effectiveMaxCap,
   };
+}
+
+// =============================================
+// Per-inbox warmup (inbox-rotation safety)
+// =============================================
+// Warmup is tracked PER INBOX, not only per user: each inbox ramps on its OWN
+// sending activity. This protects a freshly-added secondary inbox from being blasted
+// at the account's current (already-warmed) volume on day one — which would get the
+// new inbox flagged. An inbox's warmup day = the number of distinct calendar days
+// (UTC) it has itself sent >= 1 email. A brand-new inbox = day 0 = week-1 pace, and
+// it climbs on its own clock regardless of how old the account is.
+
+// Count distinct UTC days a specific inbox has sent >= 1 email.
+async function getInboxWarmupDay(accountId: string, accountType: "gmail" | "smtp"): Promise<number> {
+  const column = accountType === "gmail" ? "gmail_account_id" : "smtp_account_id";
+  const { data, error } = await supabase
+    .from("emails")
+    .select("sent_at")
+    .eq(column, accountId)
+    .eq("status", "sent")
+    .not("sent_at", "is", null);
+
+  if (error || !data || data.length === 0) return 0; // never sent → day 0 (week-1 pace)
+
+  const uniqueDays = new Set<string>();
+  for (const row of data) {
+    if (row.sent_at) uniqueDays.add(row.sent_at.substring(0, 10)); // "YYYY-MM-DD" (UTC)
+  }
+  return uniqueDays.size;
+}
+
+// Today's per-inbox daily send cap. Applies THIS inbox's own warmup day against the
+// plan ramp, then bounds it by the trial cap and the absolute Gmail safety cap.
+// Combined with the account-level total (getDailyLimit), sending stops when EITHER
+// cap is hit — so the account never exceeds its plan volume AND no single inbox ever
+// out-runs its own warmup. For a single-inbox account this equals the user-level
+// limit (the one inbox's activity == the account's), so nothing changes for them.
+export async function getInboxDailyLimit(
+  userId: string,
+  accountId: string,
+  accountType: "gmail" | "smtp"
+): Promise<number> {
+  const userPlan = await getUserPlan(userId);
+
+  // No active subscription → no sending from any inbox.
+  const hasAccess = hasActiveSubscription(
+    userPlan.subscriptionStatus,
+    userPlan.trialEndsAt,
+    userPlan.currentPeriodEnd,
+    userPlan.pastDueSince
+  );
+  if (!hasAccess) return 0;
+
+  const config = PLAN_CONFIGS[userPlan.plan];
+  const inboxWarmupDay = await getInboxWarmupDay(accountId, accountType);
+  const { limit } = warmupLimitForDay(config, inboxWarmupDay);
+
+  // Trial caps every inbox at the trial daily limit; paid plans at the plan max.
+  const effectiveMaxCap = userPlan.isOnTrial ? TRIAL_DAILY_EMAILS : config.maxDailyEmails;
+  return Math.min(limit, effectiveMaxCap, GMAIL_INBOX_CAP);
 }
 
 // =============================================

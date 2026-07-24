@@ -69,6 +69,16 @@ app.get("/api/gmail/callback", (req, res, next) => {
   gmailRouter(req, res, next);
 });
 
+// Lemon Squeezy billing webhooks — called server-to-server with NO Origin header, so
+// this MUST be registered BEFORE the CORS middleware (which rejects no-Origin requests
+// in production). Uses its own JSON parser that captures the raw body for HMAC
+// signature verification. No CORS / auth / rate-limit needed.
+app.use(
+  "/api/webhooks/lemonsqueezy",
+  express.json({ verify: (req: any, _res, buf) => { req.rawBody = buf.toString(); } }),
+  webhooksRouter
+);
+
 // Middleware
 const allowedOrigins = [
   "http://localhost:3000",
@@ -118,11 +128,7 @@ app.use("/api/stats", statsRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/billing", billingRouter);
 
-// Webhooks — no CORS/auth/rate-limit needed (Lemon Squeezy calls directly)
-app.use("/api/webhooks/lemonsqueezy", webhooksRouter);
-
-// OAuth callback route (Gmail) needs no origin — Google redirects browser directly
-// It's already protected by HMAC-signed state parameter verification
+// (Lemon Squeezy webhook is mounted above, before CORS — see top of middleware setup.)
 
 // Catch-all error handler — MUST be registered after all routes. Synchronous
 // throws in route handlers, explicit next(err) calls, and rejected middleware

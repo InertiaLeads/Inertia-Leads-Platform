@@ -5,7 +5,7 @@ import Link from "next/link";
 import { apiPut } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 
-export type SetupRequiredType = "service" | "inbox";
+export type SetupRequiredType = "service" | "inbox" | "profile";
 
 const SERVICE_OPTIONS = [
   { value: "web_dev", label: "Web Dev", iconPath: "M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" },
@@ -173,6 +173,44 @@ function InboxSetup({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ---- Profile: name + business address are baked into every email (CAN-SPAM), so navigate ----
+function ProfileSetup({ onClose }: { onClose: () => void }) {
+  return (
+    <>
+      <IconBubble>
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6962c4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
+        </svg>
+      </IconBubble>
+
+      <h2 className="text-xl font-bold text-white mb-2">Complete your profile first</h2>
+      <p className="text-sm text-gray-400 mb-6 leading-relaxed">
+        Your name and business address are added to the bottom of every email — they&rsquo;re legally required (CAN-SPAM) for cold outreach. Add them in Settings before generating emails.
+      </p>
+
+      <Link
+        href="/settings#profile"
+        className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-105"
+        style={{
+          background: "linear-gradient(135deg, #6962c4 0%, #3d3580 100%)",
+          boxShadow: "0 4px 15px rgba(105,98,196,0.4)",
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
+        </svg>
+        Complete Profile
+      </Link>
+
+      <button onClick={onClose} className="block w-full mt-4 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+        Not now
+      </button>
+    </>
+  );
+}
+
 export default function SetupRequiredModal({
   type,
   onClose,
@@ -184,7 +222,11 @@ export default function SetupRequiredModal({
 }) {
   return (
     <ModalShell onClose={onClose}>
-      {type === "service" ? <ServiceSetup onClose={onClose} onSaved={onServiceSaved} /> : <InboxSetup onClose={onClose} />}
+      {type === "service"
+        ? <ServiceSetup onClose={onClose} onSaved={onServiceSaved} />
+        : type === "inbox"
+        ? <InboxSetup onClose={onClose} />
+        : <ProfileSetup onClose={onClose} />}
     </ModalShell>
   );
 }

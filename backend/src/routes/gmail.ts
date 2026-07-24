@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
-import { getAuthUrl, handleOAuthCallback, isGmailConnected, getGmailAccounts, removeGmailAccount, verifyOAuthState, extractOAuthStateUserId } from "../services/gmail";
+import { getAuthUrl, handleOAuthCallback, isGmailConnected, getGmailAccounts, removeGmailAccount, verifyOAuthState } from "../services/gmail";
 import { getUserPlan, getMaxInboxes, checkSubscriptionAccess } from "../services/planLimits";
 import { isValidUUID } from "../middleware/validate";
 import { auditLog } from "../utils/auditLog";
@@ -40,30 +40,23 @@ router.get("/auth-url", authMiddleware, async (req: AuthenticatedRequest, res) =
 // No authMiddleware: Google redirects here without a Bearer token.
 // User identity is verified via the signed state parameter instead.
 router.get("/callback", async (req, res) => {
-  // Google redirects the BROWSER here, so we must respond with an HTTP redirect back to the
-  // frontend Settings page (not JSON). The full-page load re-fetches connected inboxes, so the
-  // Gmail card shows the newly connected address; the ?gmail= param drives a success/error toast.
+  // Google redirects the BROWSER here with NO auth token, so we cannot confirm the
+  // person finishing the flow is the one who started it. Completing the connection here
+  // would let an attacker attach a victim's inbox to the attacker's account (the signed
+  // state carries a userId but nothing ties it to this browser's session).
+  // Instead, hand code+state to the frontend, which finishes via the AUTHENTICATED
+  // POST /callback — that binds the state to the logged-in user (verifyOAuthState).
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-  try {
-    const code = req.query.code as string;
-    const state = req.query.state as string;
+  const code = req.query.code as string;
+  const state = req.query.state as string;
 
-    if (!code) {
-      res.redirect(`${frontendUrl}/settings?gmail=error`);
-      return;
-    }
-
-    const userId = extractOAuthStateUserId(state);
-    if (!userId) {
-      res.redirect(`${frontendUrl}/settings?gmail=error`);
-      return;
-    }
-
-    await handleOAuthCallback(code, userId);
-    res.redirect(`${frontendUrl}/settings?gmail=connected`);
-  } catch {
+  if (!code || !state) {
     res.redirect(`${frontendUrl}/settings?gmail=error`);
+    return;
   }
+
+  const params = new URLSearchParams({ gmail_code: code, gmail_state: state });
+  res.redirect(`${frontendUrl}/settings?${params.toString()}`);
 });
 
 // POST /api/gmail/callback — Handle OAuth2 code sent from frontend

@@ -2,6 +2,10 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { URL } from "url";
 import dns from "dns/promises";
+import dnsCb from "dns";
+import http from "http";
+import https from "https";
+import net from "net";
 import logger from "../utils/logger";
 import { detectLanguage } from "../utils/languageDetection";
 
@@ -60,6 +64,63 @@ function isPrivateIP(ip: string): boolean {
   if (parts.every(p => p === 0)) return true;
 
   return false;
+}
+
+// Block private/internal IPv6 addresses (loopback, link-local, unique-local, and
+// IPv4-mapped forms like ::ffff:127.0.0.1 / ::ffff:169.254.x.x).
+function isBlockedIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  const mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mapped) return isPrivateIP(mapped[1]);
+  if (lower === "::1" || lower === "::") return true;                // loopback / unspecified
+  if (lower.startsWith("fe80:")) return true;                         // link-local
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;  // unique-local fc00::/7
+  return false;
+}
+
+// Unified check: is this resolved IP (v4 or v6) internal/disallowed?
+function isBlockedAddress(ip: string): boolean {
+  return ip.includes(":") ? isBlockedIPv6(ip) : isPrivateIP(ip);
+}
+
+// Custom DNS lookup used by our HTTP(S) agents below. It runs at socket-connect time
+// for EVERY connection — including each redirect hop — so it closes SSRF-via-redirect
+// and DNS-rebinding by validating the actual IP we're about to connect to, not just
+// the original URL string.
+function safeLookup(hostname: string, options: any, callback: any): void {
+  (dnsCb.lookup as any)(hostname, options, (err: any, address: any, family: any) => {
+    if (err) return callback(err, address, family);
+    const entries = Array.isArray(address) ? address : [{ address, family }];
+    for (const entry of entries) {
+      const ip = typeof entry === "string" ? entry : entry.address;
+      if (isBlockedAddress(ip)) {
+        return callback(new Error(`SSRF blocked: ${hostname} resolves to disallowed IP ${ip}`), address, family);
+      }
+    }
+    callback(null, address, family);
+  });
+}
+
+// HTTP(S) agents that enforce safeLookup on every connection. Reused across all
+// scraper fetches (passed as httpAgent/httpsAgent), so redirects and rebinding can't
+// reach internal addresses. Legitimate public redirects still work normally.
+const safeHttpAgent = new http.Agent();
+const safeHttpsAgent = new https.Agent();
+for (const agent of [safeHttpAgent, safeHttpsAgent]) {
+  const orig = (agent as any).createConnection.bind(agent);
+  (agent as any).createConnection = (opts: any, cb: any) => {
+    // Literal IPs skip DNS resolution entirely, so safeLookup never runs for them —
+    // validate a literal-IP host directly here (this is the primary SSRF target, e.g.
+    // a redirect to http://169.254.169.254/). Hostnames are validated by safeLookup at
+    // resolution time, which also catches DNS-rebinding.
+    const host: string = opts.host || opts.hostname || "";
+    if (host && net.isIP(host) && isBlockedAddress(host)) {
+      const err = new Error(`SSRF blocked: direct connection to disallowed IP ${host}`);
+      if (typeof cb === "function") { cb(err); return undefined; }
+      throw err;
+    }
+    return orig({ ...opts, lookup: safeLookup }, cb);
+  };
 }
 
 async function isUrlSafe(websiteUrl: string): Promise<boolean> {
@@ -133,6 +194,8 @@ export async function scrapeWebsite(
       await axios.head(websiteUrl, {
         timeout: 8000,
         maxRedirects: 5,
+        httpAgent: safeHttpAgent,
+        httpsAgent: safeHttpsAgent,
         headers: connectHeaders,
         validateStatus: () => true, // Accept ANY status — if the server responds at all, it's up
       });
@@ -143,6 +206,8 @@ export async function scrapeWebsite(
         await axios.get(websiteUrl, {
           timeout: 8000,
           maxRedirects: 5,
+          httpAgent: safeHttpAgent,
+          httpsAgent: safeHttpsAgent,
           maxContentLength: 100 * 1024, // only need first 100KB to confirm site is up
           headers: connectHeaders,
           validateStatus: () => true,
@@ -178,6 +243,8 @@ export async function scrapeWebsite(
         const response = await axios.get(url, {
           timeout: 10000,
           maxRedirects: 5,
+          httpAgent: safeHttpAgent,
+          httpsAgent: safeHttpsAgent,
           maxContentLength: 2 * 1024 * 1024, // 2MB max — skip huge pages
           headers: {
             "User-Agent":
@@ -505,6 +572,8 @@ export async function scrapeWebsite(
         await axios.head(httpsUrl, {
           timeout: 4000,
           maxRedirects: 2,
+          httpAgent: safeHttpAgent,
+          httpsAgent: safeHttpsAgent,
           headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
           validateStatus: (status) => status < 500,
         });

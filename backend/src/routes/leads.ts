@@ -682,12 +682,28 @@ router.post("/enrich", authMiddleware, enrichLimiter, async (req: AuthenticatedR
       return;
     }
 
+    // Skip re-scraping leads that were SUCCESSFULLY enriched very recently. This blocks
+    // rapid replay (hammering the same lead IDs to run up scraping/search cost) without
+    // hurting normal use: first-time enrichment and retries of a failed/empty enrichment
+    // are never skipped, and skipped leads are still returned with their existing data.
+    const ENRICH_COOLDOWN_MS = 30 * 60 * 1000;
+    const nowMs = Date.now();
+    const toEnrich: any[] = [];
+    const skipped: any[] = [];
+    for (const l of leads) {
+      const led = l.enriched_data || {};
+      const enrichedAt = led.enrichedAt ? new Date(led.enrichedAt).getTime() : 0;
+      const hasData = !!(led.summary || led.title || (led.technologies && led.technologies.length));
+      if (hasData && nowMs - enrichedAt < ENRICH_COOLDOWN_MS) skipped.push(l);
+      else toEnrich.push(l);
+    }
+
     // Enrich leads in parallel batches of 5
     const ENRICH_BATCH_SIZE = 5;
     const enrichedLeads: { id: string; score: number; summary: string }[] = [];
 
-    for (let i = 0; i < leads.length; i += ENRICH_BATCH_SIZE) {
-      const batch = leads.slice(i, i + ENRICH_BATCH_SIZE);
+    for (let i = 0; i < toEnrich.length; i += ENRICH_BATCH_SIZE) {
+      const batch = toEnrich.slice(i, i + ENRICH_BATCH_SIZE);
       const batchResults = await Promise.all(batch.map(async (lead) => {
         try {
           let websiteData = null;
@@ -725,6 +741,7 @@ router.post("/enrich", authMiddleware, enrichLimiter, async (req: AuthenticatedR
             enriched_data: {
               ...websiteData,
               ...enrichmentSummary,
+              enrichedAt: new Date().toISOString(), // used for the per-lead enrich cooldown
               // Industry priority: lead.industry (from niche search / CSV) > scraper detection
               industry: lead.industry || websiteData?.industry || "Unknown",
               // Preserve Google rating/reviews from lead finder (not available from scraper)
@@ -802,6 +819,12 @@ router.post("/enrich", authMiddleware, enrichLimiter, async (req: AuthenticatedR
       for (const r of batchResults) {
         if (r) enrichedLeads.push(r);
       }
+    }
+
+    // Include recently-enriched (skipped) leads in the response with their existing data,
+    // so the client still shows them as enriched (nothing appears to "fail").
+    for (const l of skipped) {
+      enrichedLeads.push({ id: l.id, score: l.score || 0, summary: l.enriched_data?.summary || "" });
     }
 
     res.json({

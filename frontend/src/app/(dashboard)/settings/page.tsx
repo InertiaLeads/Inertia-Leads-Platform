@@ -432,6 +432,10 @@ export default function SettingsPage() {
   }, [fetchAccounts]);
 
   const saveProfile = async () => {
+    if (!profileName.trim()) {
+      setProfileMsg({ type: "error", text: "Name is required — it's shown as the sender on every email." });
+      return;
+    }
     if (!profileAddress.trim()) {
       setProfileMsg({ type: "error", text: "Business address is required (CAN-SPAM compliance)." });
       return;
@@ -531,31 +535,31 @@ export default function SettingsPage() {
   // Handle OAuth callback code from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
+    const gmailCode = params.get("gmail_code");
+    const gmailState = params.get("gmail_state");
     const gmailStatus = params.get("gmail");
 
-    // Backend GET /gmail/callback redirects here with ?gmail=connected|error after connecting.
-    if (gmailStatus === "connected") {
-      fetchAccounts();
-      toast.addToast("Gmail connected successfully!", "success");
-      window.history.replaceState({}, "", "/settings");
-      return;
-    }
+    // Backend GET /gmail/callback redirects here with ?gmail=error if the callback was malformed.
     if (gmailStatus === "error") {
       toast.addToast("Failed to connect Gmail. Please try again.", "error");
       window.history.replaceState({}, "", "/settings");
       return;
     }
 
-    if (code) {
+    // Secure completion: the backend GET callback hands us code+state; we finish the
+    // connection via the AUTHENTICATED POST /callback, which binds the OAuth state to the
+    // logged-in user (so nobody can attach someone else's inbox to this account).
+    if (gmailCode && gmailState) {
       (async () => {
         try {
           setLoading(true);
-          await apiPost("/gmail/callback", { code });
+          await apiPost("/gmail/callback", { code: gmailCode, state: gmailState });
           await fetchAccounts();
+          toast.addToast("Gmail connected successfully!", "success");
         } catch (err) {
           console.error("Failed to connect Gmail:", err);
-          toast.addToast("Failed to connect Gmail. Please try again.", "error");
+          const msg = err instanceof Error ? err.message : "Failed to connect Gmail. Please try again.";
+          toast.addToast(msg, "error");
         } finally {
           setLoading(false);
         }
@@ -857,7 +861,7 @@ export default function SettingsPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Profile Card */}
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden" style={{ border: "1px solid rgba(47,39,108,0.4)" }}>
+        <div id="profile" className="bg-white rounded-2xl shadow-sm overflow-hidden scroll-mt-24" style={{ border: "1px solid rgba(47,39,108,0.4)" }}>
           <div className="px-6 py-4 border-b" style={{ background: "#2f276c", borderColor: "#2f276c" }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
@@ -889,7 +893,7 @@ export default function SettingsPage() {
             {profileEditing ? (
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Full Name</label>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Full Name <span className="text-red-500">*</span></label>
                   <input
                     type="text"
                     value={profileName}

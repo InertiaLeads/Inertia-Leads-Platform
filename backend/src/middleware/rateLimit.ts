@@ -45,24 +45,16 @@ async function getVerifiedUserId(token: string): Promise<string | null> {
   }
 }
 
-function getUserKey(req: Request): string {
+async function getUserKey(req: Request): Promise<string> {
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.split(" ")[1];
-    // Use the token itself as the key temporarily
-    // The verified user ID will be used once resolved
-    // This is safe because invalid tokens will just get IP-based limiting
-    const cached = verifiedUserCache.get(token);
-    if (cached && cached.expiresAt > Date.now()) {
-      return `user_${cached.userId}`;
-    }
-    // For uncached tokens, verify in background and use token hash for now
-    // This prevents forged tokens from affecting other users
-    getVerifiedUserId(token); // fire-and-forget to populate cache
-    // Use a hash of the token itself (not decoded payload) as key
-    // This way forged tokens only affect the attacker, not the victim
-    const tokenHash = Buffer.from(token.slice(-32)).toString("base64url");
-    return `token_${tokenHash}`;
+    // Resolve the VERIFIED user id (cached for 5 min) and key on it. Keying on the
+    // verified user — not the raw token — means a user who rotates access tokens still
+    // shares a single bucket and cannot slip past the per-user limits by minting a fresh
+    // token per request. Unverifiable/forged tokens fall through to IP-based limiting.
+    const userId = await getVerifiedUserId(token);
+    if (userId) return `user_${userId}`;
   }
   return ipKeyGenerator(req.ip || "unknown");
 }

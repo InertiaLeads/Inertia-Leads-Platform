@@ -1163,6 +1163,13 @@ export default function CampaignDetailPage() {
       setSetupModal("service");
       return;
     }
+    // Name + business address are baked into every email as the legally-required
+    // (CAN-SPAM) sender footer. Block generation until the profile is complete.
+    const meta = user?.user_metadata || {};
+    if (!(meta.full_name || "").trim() || !(meta.business_address || "").trim()) {
+      setSetupModal("profile");
+      return;
+    }
     await runGenerate();
   };
 
