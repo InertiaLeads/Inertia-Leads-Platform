@@ -202,18 +202,52 @@ async function getValidAccessToken(gmailAccountId: string): Promise<string> {
   return credentials.access_token;
 }
 
-// Send an email via Gmail API using a specific Gmail account
+// Look up the sender's display name (their profile full_name) for the From header.
+// Gmail otherwise falls back to the Google account's profile name (e.g. "aman"),
+// which reads as impersonal. Returns "" if no name is set.
+async function getSenderDisplayName(userId: string): Promise<string> {
+  try {
+    const { data, error } = await supabase.auth.admin.getUserById(userId);
+    if (error || !data?.user) return "";
+    const meta = (data.user.user_metadata || {}) as Record<string, string>;
+    return (meta.full_name || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+// Format a From header value as `"Display Name" <email>`, RFC 2047-encoding the
+// name when it contains non-ASCII. Falls back to the bare address if no name.
+function formatFromHeader(email: string, displayName: string): string {
+  // Strip characters that could break out of the display name / inject headers.
+  const safeName = displayName.replace(/["\\<>\r\n]/g, "").trim();
+  if (!safeName) return email;
+  // Pure ASCII → quoted-string; non-ASCII → RFC 2047 encoded-word (must NOT be quoted).
+  const isAscii = /^[\x20-\x7E]*$/.test(safeName);
+  const namePart = isAscii ? `"${safeName}"` : encodeMimeHeader(safeName);
+  return `${namePart} <${email}>`;
+}
+
+export interface ThreadingOptions {
+  inReplyTo?: string;   // Message-ID of the message this one replies to
+  references?: string;  // space-separated Message-ID chain of the thread
+  threadId?: string;    // Gmail API thread id to file this message into
+}
+
+// Send an email via Gmail API using a specific Gmail account.
+// Returns the RFC 2822 Message-ID we stamped on the message and the Gmail thread id,
+// so follow-ups can be threaded under it.
 export async function sendEmail(
   gmailAccountId: string,
   to: string,
   subject: string,
   body: string,
-  listUnsubscribeUrl?: string
-): Promise<{ success: boolean; messageId?: string }> {
-  // Fetch account for both token and email address
+  threading?: ThreadingOptions
+): Promise<{ success: boolean; messageId?: string; threadId?: string }> {
+  // Fetch account for token, email address, and owner (for display name lookup)
   const { data: account, error: accountError } = await supabase
     .from("gmail_accounts")
-    .select("email")
+    .select("email, user_id")
     .eq("id", gmailAccountId)
     .single();
 
@@ -232,18 +266,35 @@ export async function sendEmail(
   // email reads like a personal 1:1 message and lands in Primary, not Promotions.
   const text = body.trimEnd();
 
-  const headers = [
+  // Stamp our own Message-ID so we can thread follow-ups against it. Gmail preserves
+  // a caller-supplied Message-ID header; using our own avoids a follow-up read-back call.
+  const senderEmail = (!accountError && account?.email) ? account.email : "";
+  const domain = senderEmail.split("@")[1] || "mail.gmail.com";
+  const messageId = `<${crypto.randomBytes(16).toString("hex")}@${domain}>`;
+
+  const headers: string[] = [];
+  // From with display name (supports send-as aliases). Falls back to bare address.
+  if (senderEmail) {
+    const displayName = account?.user_id ? await getSenderDisplayName(account.user_id) : "";
+    headers.push(`From: ${formatFromHeader(senderEmail, displayName)}`);
+  }
+  headers.push(
     `To: ${safeTo}`,
     // Subject may contain non-ASCII (em-dash, smart quotes, emoji). Headers are
     // ASCII-only, so RFC 2047-encode it — otherwise Gmail renders it as mojibake.
     `Subject: ${encodeMimeHeader(safeSubject)}`,
+    `Message-ID: ${messageId}`,
+  );
+  // Threading headers — present only on follow-ups. Gmail uses these plus the Re:
+  // subject and threadId to file the message into the original conversation.
+  const inReplyTo = threading?.inReplyTo?.replace(/[\r\n]/g, "");
+  const references = threading?.references?.replace(/[\r\n]/g, "");
+  if (inReplyTo) headers.push(`In-Reply-To: ${inReplyTo}`);
+  if (references) headers.push(`References: ${references}`);
+  headers.push(
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset="UTF-8"`,
-  ];
-  // Add From header if account email is known (supports send-as aliases)
-  if (!accountError && account?.email) {
-    headers.unshift(`From: ${account.email}`);
-  }
+  );
 
   const rawEmail = headers.join("\n") + "\n\n" + text;
 
@@ -257,12 +308,16 @@ export async function sendEmail(
     userId: "me",
     requestBody: {
       raw: encodedEmail,
+      // Filing into an existing thread requires the threadId AND a matching Re:
+      // subject + References headers (all set above).
+      ...(threading?.threadId ? { threadId: threading.threadId } : {}),
     },
   });
 
   return {
     success: true,
-    messageId: result.data.id || undefined,
+    messageId,
+    threadId: result.data.threadId || undefined,
   };
 }
 

@@ -197,12 +197,51 @@ async function sendSingleEmail(
     return false;
   }
 
+  // ===== THREADING: stitch follow-ups under the initial email =====
+  // Follow-ups must (a) carry In-Reply-To / References pointing at the earlier
+  // messages, (b) reuse the Gmail thread id, and (c) use a "Re: <original subject>"
+  // subject — Gmail groups a conversation only when all three line up. We pull the
+  // already-sent earlier steps for this lead to source those identifiers.
+  let subjectToSend: string = email.subject;
+  let threading: { inReplyTo?: string; references?: string; threadId?: string } | undefined;
+
+  if ((email.sequence_step || 1) > 1 && email.lead_id) {
+    const { data: priorSteps } = await supabase
+      .from("emails")
+      .select("subject, message_id, thread_id, sequence_step")
+      .eq("campaign_id", campaign.id)
+      .eq("lead_id", email.lead_id)
+      .eq("status", "sent")
+      .lt("sequence_step", email.sequence_step)
+      .order("sequence_step", { ascending: true });
+
+    if (priorSteps && priorSteps.length > 0) {
+      const root = priorSteps[0];               // the initial email (step 1)
+      const parent = priorSteps[priorSteps.length - 1]; // the immediately preceding step
+      const chain = priorSteps.map((s) => s.message_id).filter(Boolean) as string[];
+
+      // Re: <initial subject>, without stacking multiple "Re:" prefixes.
+      if (root.subject) {
+        const base = root.subject.replace(/^(re:\s*)+/i, "").trim();
+        subjectToSend = `Re: ${base}`;
+      }
+
+      threading = {
+        inReplyTo: parent.message_id || undefined,
+        references: chain.length > 0 ? chain.join(" ") : undefined,
+        // A Gmail thread shares one thread id across every message; the parent's is the initial's.
+        threadId: accountInfo.type === "gmail" ? (parent.thread_id || undefined) : undefined,
+      };
+    }
+  }
+
   const result = await sendEmailUnified(
     accountInfo.id,
     accountInfo.type,
     email.to_email,
-    email.subject,
-    email.body
+    subjectToSend,
+    email.body,
+    threading
   );
 
   if (!result.success) {
@@ -217,6 +256,12 @@ async function sendSingleEmail(
       status: "sent",
       sent_at: new Date().toISOString(),
       error_log: null,
+      // Persist thread identifiers so later steps can thread under this message.
+      message_id: result.messageId || null,
+      thread_id: result.threadId || null,
+      // Persist the actual sent subject (rewritten to "Re: ..." for follow-ups) so the
+      // app UI reflects what the recipient received.
+      subject: subjectToSend,
     })
     .eq("id", email.id);
 

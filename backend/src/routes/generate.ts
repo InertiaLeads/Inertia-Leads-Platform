@@ -141,6 +141,36 @@ function appendSignature(body: string, signature: string): string {
   return body.trimEnd() + "\n\n" + signature;
 }
 
+// Follow-up audit-link intros. Rotated so the same line doesn't repeat identically
+// across a sequence (an identical repeated line reads as an automated template and
+// hurts deliverability). Injected in CODE — the model never generates these, so they
+// add ZERO OpenAI token cost.
+const AUDIT_LINK_INTROS_FOLLOWUP: string[] = [
+  "Quick snapshot of what I found:",
+  "Here's the breakdown I put together:",
+  "In case it got buried, here's what I found:",
+  "The quick rundown of your site:",
+];
+
+// Softer intros for the final break-up email — keeps the no-pressure tone.
+const AUDIT_LINK_INTROS_BREAKUP: string[] = [
+  "If you ever want it, the breakdown's here:",
+  "No pressure — it's here if you're ever curious:",
+  "Leaving this here in case it's useful down the line:",
+];
+
+// Append the audit link (a short intro line + the raw URL on its own line) before the
+// signature, so a lead who only reads a follow-up can still reach the report without
+// hunting for the initial email. Kept to a single plain link — no tracking params, no
+// HTML anchor — to stay consistent with the plain-text, Primary-inbox strategy.
+// Returns the body unchanged when there's no audit URL (e.g. a plan without audit reports).
+function appendAuditLink(body: string, auditUrl: string | undefined, variant: "followup" | "breakup"): string {
+  if (!auditUrl) return body;
+  const intros = variant === "breakup" ? AUDIT_LINK_INTROS_BREAKUP : AUDIT_LINK_INTROS_FOLLOWUP;
+  const intro = intros[Math.floor(Math.random() * intros.length)];
+  return body.trimEnd() + "\n\n" + intro + "\n" + auditUrl;
+}
+
 // Distinct email STRUCTURES, rotated per lead. The point is genuine shape variation
 // (length, opening move, whether there's social proof) — not just different words —
 // so a mass send doesn't collapse into one spam-detectable template fingerprint.
@@ -1068,7 +1098,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
                           user_id: req.userId,
                           to_email: lead.email,
                           subject: f1Data.subject,
-                          body: appendOptOut(appendSignature(f1Data.body, senderSignature)),
+                          body: appendOptOut(appendSignature(appendAuditLink(f1Data.body, auditUrl, "followup"), senderSignature)),
                           status: "pending",
                           sequence_step: 2,
                           scheduled_at: calculateFollowUpDate(2, 4),
@@ -1099,7 +1129,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
                           user_id: req.userId,
                           to_email: lead.email,
                           subject: f2Data.subject,
-                          body: appendOptOut(appendSignature(f2Data.body, senderSignature)),
+                          body: appendOptOut(appendSignature(appendAuditLink(f2Data.body, auditUrl, "breakup"), senderSignature)),
                           status: "pending",
                           sequence_step: 3,
                           scheduled_at: calculateFollowUpDate(5, 7),

@@ -169,14 +169,16 @@ export async function removeSmtpAccount(userId: string, accountId: string): Prom
     .eq("user_id", userId);
 }
 
-// Send an email via SMTP
+// Send an email via SMTP.
+// Returns the Message-ID nodemailer stamped on the message so follow-ups can be
+// threaded under it via In-Reply-To / References (SMTP has no Gmail-style threadId).
 export async function sendViaSMTP(
   smtpAccountId: string,
   to: string,
   subject: string,
   body: string,
-  listUnsubscribeUrl?: string
-): Promise<{ success: boolean; messageId?: string }> {
+  threading?: { inReplyTo?: string; references?: string }
+): Promise<{ success: boolean; messageId?: string; threadId?: string }> {
   const { data: account, error } = await supabase
     .from("smtp_accounts")
     .select("*")
@@ -223,11 +225,18 @@ export async function sendViaSMTP(
   // RFC 2047-encodes the subject automatically.)
   const text = body.trimEnd();
 
+  // Threading headers (follow-ups only). nodemailer emits In-Reply-To / References
+  // from these; combined with the Re: subject, clients group the sequence as one thread.
+  const inReplyTo = threading?.inReplyTo?.replace(/[\r\n]/g, "") || undefined;
+  const references = threading?.references?.replace(/[\r\n]/g, "") || undefined;
+
   const result = await transporter.sendMail({
     from: fromAddress,
     to: safeTo,
     subject: safeSubject,
     text,
+    ...(inReplyTo ? { inReplyTo } : {}),
+    ...(references ? { references } : {}),
   });
 
   transporter.close();

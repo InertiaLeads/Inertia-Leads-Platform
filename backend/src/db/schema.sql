@@ -142,6 +142,8 @@ create table if not exists emails (
   sent_at timestamp with time zone,
   scheduled_at timestamp with time zone,
   claimed_at timestamp with time zone, -- when a worker claimed this email for sending (status='sending')
+  message_id text, -- RFC 2822 Message-ID of this send (follow-ups reference it for threading)
+  thread_id text,  -- Gmail API thread id of this send (NULL for SMTP)
   gmail_account_id uuid references gmail_accounts(id) on delete set null,
   created_at timestamp with time zone default now()
 );
@@ -439,6 +441,13 @@ values
   ('email_queue', '2000-01-01T00:00:00Z', ''),
   ('csv_drip_feed', '2000-01-01T00:00:00Z', '')
 on conflict (lock_name) do nothing;
+
+-- RLS: enable with NO policies. The background workers touch this table only via the
+-- service-role RPCs below (acquire/release/heartbeat_job_lock, all security definer),
+-- which bypass RLS; the frontend never touches it. Enabling RLS with no policies denies
+-- the anon/authenticated (PostgREST) roles entirely — closing a DoS vector where a user
+-- could hijack or delete the queue lock through the public API and halt all sending.
+alter table job_locks enable row level security;
 
 -- =============================================
 -- Table: audit_views (track when leads view their audit report)

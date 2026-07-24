@@ -59,19 +59,27 @@ export async function getPrimaryEmailAccountId(userId: string): Promise<{ id: st
   return null;
 }
 
-// Unified send — routes to Gmail API or SMTP based on account type
+// Threading identifiers for stitching a follow-up into its original conversation.
+export interface ThreadingOptions {
+  inReplyTo?: string;   // Message-ID of the message this one replies to
+  references?: string;  // space-separated Message-ID chain of the thread
+  threadId?: string;    // Gmail API thread id (ignored by SMTP)
+}
+
+// Unified send — routes to Gmail API or SMTP based on account type.
+// Returns the Message-ID and (Gmail) thread id of this send for follow-up threading.
 export async function sendEmailUnified(
   accountId: string,
   accountType: "gmail" | "smtp",
   to: string,
   subject: string,
   body: string,
-  listUnsubscribeUrl?: string
-): Promise<{ success: boolean; messageId?: string }> {
+  threading?: ThreadingOptions
+): Promise<{ success: boolean; messageId?: string; threadId?: string }> {
   if (accountType === "gmail") {
-    return sendViaGmail(accountId, to, subject, body, listUnsubscribeUrl);
+    return sendViaGmail(accountId, to, subject, body, threading);
   } else {
-    return sendViaSMTP(accountId, to, subject, body, listUnsubscribeUrl);
+    return sendViaSMTP(accountId, to, subject, body, threading);
   }
 }
 
