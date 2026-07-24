@@ -58,7 +58,7 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
     if (hasActiveSubscription) {
       const { error: updateError } = await updateSubscription(
         userPlan.lemon_squeezy_subscription_id,
-        { variantId: parseInt(variantId) }
+        { variantId: parseInt(variantId), invoiceImmediately: true }
       );
 
       if (updateError) {
