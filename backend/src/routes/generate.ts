@@ -171,6 +171,15 @@ function appendAuditLink(body: string, auditUrl: string | undefined, variant: "f
   return body.trimEnd() + "\n\n" + intro + "\n" + auditUrl;
 }
 
+// Follow-up subjects must be "Re: <initial subject>" so Gmail groups the whole
+// sequence into one conversation. Set at generation time (the initial subject is
+// already known) so the stored subject — and the app's sequence preview — match
+// exactly what gets sent. Strips any existing "Re:" so it never stacks.
+function buildReplySubject(initialSubject: string): string {
+  const base = (initialSubject || "").replace(/^(re:\s*)+/i, "").trim();
+  return `Re: ${base}`;
+}
+
 // Distinct email STRUCTURES, rotated per lead. The point is genuine shape variation
 // (length, opening move, whether there's social proof) — not just different words —
 // so a mass send doesn't collapse into one spam-detectable template fingerprint.
@@ -1097,7 +1106,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
                           campaign_id: campaignId,
                           user_id: req.userId,
                           to_email: lead.email,
-                          subject: f1Data.subject,
+                          subject: buildReplySubject(emailData.subject),
                           body: appendOptOut(appendSignature(appendAuditLink(f1Data.body, auditUrl, "followup"), senderSignature)),
                           status: "pending",
                           sequence_step: 2,
@@ -1128,7 +1137,7 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
                           campaign_id: campaignId,
                           user_id: req.userId,
                           to_email: lead.email,
-                          subject: f2Data.subject,
+                          subject: buildReplySubject(emailData.subject),
                           body: appendOptOut(appendSignature(appendAuditLink(f2Data.body, auditUrl, "breakup"), senderSignature)),
                           status: "pending",
                           sequence_step: 3,

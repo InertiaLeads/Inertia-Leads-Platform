@@ -594,3 +594,20 @@ create policy "Users can insert their own suppressions"
 
 create policy "Users can delete their own suppressions"
   on email_suppressions for delete using (auth.uid() = user_id);
+
+-- =============================================
+-- MIGRATION (2026-07): email threading + job_locks RLS
+-- Idempotent — safe to run on an existing database. These are the same statements
+-- reflected in the table definitions above; kept here so an existing DB can be
+-- brought up to date by running just this block (no need to re-run the whole file).
+-- =============================================
+
+-- Store thread identifiers so follow-ups can be threaded under the initial email
+-- (Re: subject + In-Reply-To/References + Gmail threadId). See backend/src/jobs/emailQueue.ts.
+alter table emails add column if not exists message_id text; -- RFC 2822 Message-ID of this send
+alter table emails add column if not exists thread_id text;  -- Gmail API thread id (NULL for SMTP)
+
+-- Enable RLS on job_locks (was the only public table without it). Workers use
+-- service-role security-definer RPCs that bypass RLS; the frontend never touches it,
+-- so no policies are needed. Closes a DoS vector (hijacking the queue lock via the anon key).
+alter table job_locks enable row level security;
