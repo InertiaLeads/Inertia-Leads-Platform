@@ -51,7 +51,10 @@ function ToastContainer({ toasts, removeToast }: { toasts: Toast[]; removeToast:
   };
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    // z-[10000] keeps toasts above every modal on this page. The pricing modal and the
+    // confirm modal are z-50/z-[60] and render LATER in the DOM than ToastContainer, so at
+    // an equal z-index DOM order won and the toast was painted behind the blurred backdrop.
+    <div className="fixed top-4 right-4 z-[10000] flex flex-col gap-2 max-w-sm">
       {toasts.map(toast => (
         <div
           key={toast.id}

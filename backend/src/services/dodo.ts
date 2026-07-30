@@ -10,17 +10,46 @@ import DodoPayments from "dodopayments";
 
 let client: DodoPayments | null = null;
 
-// Lazily build the SDK client. Test vs live is chosen by NODE_ENV so we never hit
-// live billing from a dev/staging server. Bearer token = the Dodo API key.
+// Which Dodo environment to talk to. DODO_ENVIRONMENT wins when set explicitly
+// ("test_mode" | "live_mode"); otherwise it falls back to NODE_ENV so a dev/staging
+// server never hits live billing by accident.
+//
+// The explicit override matters: a production Railway deploy has NODE_ENV=production,
+// but live_mode only works once Dodo has APPROVED the account for live payments. Until
+// then every live_mode call fails, so a production deploy must be able to run against
+// Dodo test mode. Set DODO_ENVIRONMENT=test_mode to do that.
+export function getDodoEnvironment(): "test_mode" | "live_mode" {
+  const explicit = process.env.DODO_ENVIRONMENT?.trim();
+  if (explicit === "test_mode" || explicit === "live_mode") return explicit;
+  return process.env.NODE_ENV === "production" ? "live_mode" : "test_mode";
+}
+
+// Lazily build the SDK client. Bearer token = the Dodo API key. NOTE: the API key is
+// environment-specific — a test-mode key used against live_mode (or vice versa) fails
+// authentication, as do product IDs created in the other environment.
 export function getDodoClient(): DodoPayments {
   if (client) return client;
   const bearerToken = process.env.DODO_PAYMENTS_API_KEY;
   if (!bearerToken) throw new Error("DODO_PAYMENTS_API_KEY not configured");
   client = new DodoPayments({
     bearerToken,
-    environment: process.env.NODE_ENV === "production" ? "live_mode" : "test_mode",
+    environment: getDodoEnvironment(),
   });
   return client;
+}
+
+// Flatten a Dodo SDK error into something loggable. The SDK throws APIError objects whose
+// useful detail lives in `status` and the parsed response body — `err.message` alone is
+// often just "500 Internal Server Error", which is why failures were undiagnosable.
+export function describeDodoError(err: any): Record<string, unknown> {
+  return {
+    message: err?.message,
+    status: err?.status ?? err?.statusCode,
+    code: err?.code,
+    type: err?.type,
+    body: err?.error ?? err?.response?.data ?? err?.body,
+    environment: getDodoEnvironment(),
+  };
 }
 
 // Plan tier → Dodo product ID (from the dashboard). Mirrors the old VARIANT_MAP.

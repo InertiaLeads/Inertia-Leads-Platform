@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import supabaseAdmin from "../services/supabase";
 import { authMiddleware } from "../middleware/auth";
-import { getDodoClient, getProductId } from "../services/dodo";
+import { getDodoClient, getProductId, describeDodoError, getDodoEnvironment } from "../services/dodo";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -42,7 +42,10 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
           quantity: 1,
         });
       } catch (changeErr: any) {
-        logger.error({ err: changeErr?.message }, "Failed to swap subscription plan");
+        logger.error(
+          { dodo: describeDodoError(changeErr), userId, plan, productId },
+          "Failed to swap subscription plan"
+        );
         return res.status(500).json({ error: "Failed to change plan" });
       }
 
@@ -78,7 +81,13 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
       });
       checkoutUrl = session.checkout_url;
     } catch (checkoutErr: any) {
-      logger.error({ err: checkoutErr?.message }, "Dodo checkout creation failed");
+      // Log the full Dodo response plus the exact inputs. The usual causes are all
+      // environment mismatches: a test-mode API key or test-mode product ID being used
+      // against live_mode, or live_mode not yet approved for the account at all.
+      logger.error(
+        { dodo: describeDodoError(checkoutErr), userId, plan, productId, userEmail },
+        "Dodo checkout creation failed"
+      );
       return res.status(500).json({ error: "Failed to create checkout session" });
     }
 
@@ -89,7 +98,10 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
     logger.info({ userId, plan }, "Checkout session created");
     res.json({ checkoutUrl });
   } catch (err: any) {
-    logger.error({ err: err.message, stack: err.stack }, "Checkout error");
+    logger.error(
+      { err: err.message, stack: err.stack, dodoEnvironment: getDodoEnvironment() },
+      "Checkout error"
+    );
     res.status(500).json({ error: "Failed to create checkout" });
   }
 });

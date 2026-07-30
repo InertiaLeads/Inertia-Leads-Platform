@@ -18,6 +18,7 @@ import { apiLimiter, sendEmailLimiter, generateLimiter } from "./middleware/rate
 import { sanitizeBody, validateCampaignId } from "./middleware/validate";
 import { startEmailQueue, stopEmailQueue } from "./jobs/emailQueue";
 import { startCsvDripFeed, stopCsvDripFeed } from "./jobs/csvDripFeed";
+import { getDodoEnvironment } from "./services/dodo";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -145,7 +146,12 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
 });
 
 const server = app.listen(PORT, () => {
-  logger.info({ port: PORT }, "Backend server running");
+  // Log the Dodo mode at boot: a live_mode deploy whose account isn't yet approved for
+  // live payments fails every checkout, and that's invisible without this line.
+  logger.info(
+    { port: PORT, nodeEnv: process.env.NODE_ENV, dodoEnvironment: getDodoEnvironment() },
+    "Backend server running"
+  );
   // Start background email queue processor
   try {
     startEmailQueue();
