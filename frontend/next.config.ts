@@ -23,7 +23,7 @@ const nextConfig: NextConfig = {
           },
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; script-src 'self' 'unsafe-inline' https://app.lemonsqueezy.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ${backendOrigin} https://*.supabase.co https://*.lemonsqueezy.com; frame-src 'self' https://*.lemonsqueezy.com; object-src 'none'; base-uri 'self'; form-action 'self';`,
+            value: `default-src 'self'; script-src 'self' 'unsafe-inline' https://*.dodopayments.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ${backendOrigin} https://*.supabase.co https://*.dodopayments.com; frame-src 'self' https://*.dodopayments.com; object-src 'none'; base-uri 'self'; form-action 'self';`,
           },
         ],
       },

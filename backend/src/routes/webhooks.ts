@@ -1,175 +1,98 @@
 import { Router, Request, Response } from "express";
-import crypto from "crypto";
+import { Webhook } from "standardwebhooks";
 import supabaseAdmin from "../services/supabase";
+import { getPlanFromProduct, mapDodoStatus } from "../services/dodo";
 import logger from "../utils/logger";
 
 const router = Router();
 
-// Verify webhook signature from Lemon Squeezy
-function verifyWebhookSignature(payload: string, signature: string): boolean {
-  const secret = process.env.LEMONSQUEEZY_WEBHOOK_SECRET;
+// Verify a Dodo webhook. Dodo follows the Standard Webhooks spec: the signature is
+// an HMAC-SHA256 over `${webhook-id}.${webhook-timestamp}.${rawBody}`, carried in the
+// `webhook-signature` header. The `standardwebhooks` lib does the exact check + timing-safe
+// compare. Returns the parsed event on success, or null if verification fails.
+function verifyDodoWebhook(rawBody: string, headers: Request["headers"]): any | null {
+  const secret = process.env.DODO_WEBHOOK_SECRET;
   if (!secret) {
-    logger.error("LEMONSQUEEZY_WEBHOOK_SECRET not configured");
-    return false;
+    logger.error("DODO_WEBHOOK_SECRET not configured");
+    return null;
   }
-
-  const hmac = crypto.createHmac("sha256", secret);
-  const digest = hmac.update(payload).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
-}
-
-// Map Lemon Squeezy status to our internal status
-function mapStatus(lsStatus: string): string {
-  switch (lsStatus) {
-    case "active":
-      return "active";
-    case "on_trial":
-      return "trialing";
-    case "past_due":
-      return "past_due";
-    case "cancelled":
-      return "cancelled";
-    case "expired":
-      return "expired";
-    case "paused":
-      return "paused";
-    default:
-      return "none";
+  try {
+    const wh = new Webhook(secret);
+    return wh.verify(rawBody, {
+      "webhook-id": headers["webhook-id"] as string,
+      "webhook-signature": headers["webhook-signature"] as string,
+      "webhook-timestamp": headers["webhook-timestamp"] as string,
+    });
+  } catch {
+    return null;
   }
 }
 
-// Map variant ID back to plan name
-function getplanFromVariant(variantId: string): string {
-  const map: Record<string, string> = {
-    [process.env.LEMONSQUEEZY_STARTER_VARIANT_ID || ""]: "starter",
-    [process.env.LEMONSQUEEZY_GROWTH_VARIANT_ID || ""]: "growth",
-    [process.env.LEMONSQUEEZY_AGENCY_VARIANT_ID || ""]: "agency",
-  };
-  return map[variantId] || "starter";
-}
-
-// POST /api/webhooks/lemonsqueezy
-// This route must NOT have auth middleware — Lemon Squeezy calls it directly
+// POST /api/webhooks/dodo
+// Must NOT have auth middleware — Dodo calls this directly, server-to-server.
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const signature = req.headers["x-signature"] as string;
-    if (!signature) {
-      logger.warn("Webhook received without signature");
-      return res.status(401).json({ error: "Missing signature" });
-    }
-
-    // req.body is already parsed by express.json(), but we need raw body for signature
-    // We'll use the rawBody attached by our middleware
     const rawBody = (req as any).rawBody as string;
     if (!rawBody) {
       logger.error("Raw body not available for webhook verification");
       return res.status(500).json({ error: "Server configuration error" });
     }
 
-    if (!verifyWebhookSignature(rawBody, signature)) {
-      logger.warn("Webhook signature verification failed");
+    const event = verifyDodoWebhook(rawBody, req.headers);
+    if (!event) {
+      logger.warn("Dodo webhook signature verification failed");
       return res.status(401).json({ error: "Invalid signature" });
     }
 
-    const event = req.body;
-    const eventName = event?.meta?.event_name;
-    const customData = event?.meta?.custom_data;
-    const userId = customData?.user_id;
+    const eventType: string = event?.type || "";
+    const data = event?.data || {};
 
+    // user_id was attached as checkout metadata so we can resolve the account.
+    const userId = data?.metadata?.user_id;
     if (!userId) {
-      logger.warn({ eventName }, "Webhook received without user_id in custom data");
+      logger.warn({ eventType }, "Webhook received without user_id in metadata");
       return res.status(200).json({ received: true }); // Acknowledge but skip
     }
 
-    const attributes = event?.data?.attributes;
-    const subscriptionId = String(event?.data?.id || "");
-    const customerId = String(attributes?.customer_id || "");
-    const variantId = String(attributes?.variant_id || attributes?.first_subscription_item?.variant_id || "");
-    const status = attributes?.status || "";
-    const currentPeriodStart = attributes?.created_at || null;
-    // Prefer the real billing period end from LS; fall back to start + 30 days
-    // (one billing cycle) so expiry is never null/inconsistent with the purchase date.
+    const subscriptionId = String(data?.subscription_id || "");
+    const customerId = String(data?.customer?.customer_id || data?.customer_id || "");
+    const productId = String(data?.product_id || "");
+    const status = data?.status || "";
+    const currentPeriodStart = data?.previous_billing_date || data?.created_at || null;
+    // Prefer Dodo's real next billing date; fall back to start + 30 days so expiry is
+    // never null/inconsistent with the purchase date (same fallback as before).
     const currentPeriodEnd =
-      attributes?.renews_at ||
-      attributes?.ends_at ||
+      data?.next_billing_date ||
       (currentPeriodStart
         ? new Date(new Date(currentPeriodStart).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString()
         : null);
-    const trialEndsAt = attributes?.trial_ends_at || null;
 
-    logger.info({ eventName, userId, status, subscriptionId }, "Webhook received");
+    logger.info({ eventType, userId, status, subscriptionId }, "Dodo webhook received");
 
-    switch (eventName) {
-      case "subscription_created": {
-        const plan = getplanFromVariant(variantId);
-        let mappedStatus = mapStatus(status);
-
-        // Check if user previously had a subscription (returning user)
-        const { data: existingPlan } = await supabaseAdmin
-          .from("user_plans")
-          .select("lemon_squeezy_subscription_id, trial_ends_at")
-          .eq("user_id", userId)
-          .single();
-
-        const isReturningUser = !!(existingPlan?.lemon_squeezy_subscription_id || existingPlan?.trial_ends_at);
-
-        // Returning users should NOT get a trial — override to active
-        // LS product-level trial can't be disabled per-checkout, so we handle it here
-        let trialEnd: string | null = null;
-        if (mappedStatus === "trialing" && isReturningUser) {
-          // Case 1: Returning subscriber — no trial regardless
-          mappedStatus = "active";
-          trialEnd = null;
-          logger.info({ userId }, "Returning user — overriding trial to active");
-        } else if (mappedStatus === "trialing" && !trialEndsAt && currentPeriodEnd) {
-          // Case 2: LS sent on_trial with no trial_ends_at but has a paid period end
-          // This is a paid subscriber — LS just tagged it as trial due to product-level trial config
-          mappedStatus = "active";
-          trialEnd = null;
-          logger.info({ userId }, "New user paid subscription with no trial date — overriding trialing to active");
-        } else if (mappedStatus === "trialing" && trialEndsAt) {
-          // Case 3: Genuine trial with a valid end date
-          trialEnd = trialEndsAt;
-        }
-
+    switch (eventType) {
+      case "subscription.active": {
+        // First activation of a paid subscription. The app owns the trial, so a paid
+        // sub always clears trial_ends_at and lands on 'active'.
+        const plan = getPlanFromProduct(productId);
         await supabaseAdmin
           .from("user_plans")
           .update({
             plan,
-            subscription_status: mappedStatus,
-            lemon_squeezy_subscription_id: subscriptionId,
-            lemon_squeezy_customer_id: customerId,
-            trial_ends_at: trialEnd,
+            subscription_status: mapDodoStatus(status),
+            dodo_subscription_id: subscriptionId,
+            dodo_customer_id: customerId,
+            trial_ends_at: null,
             current_period_end: currentPeriodEnd,
             current_period_start: currentPeriodStart,
             past_due_since: null,
           })
           .eq("user_id", userId);
-
-        logger.info({ userId, plan, status: mappedStatus, isReturningUser }, "Subscription created");
+        logger.info({ userId, plan }, "Subscription active");
         break;
       }
 
-      case "subscription_updated": {
-        const plan = getplanFromVariant(variantId);
-        const mappedStatus = mapStatus(status);
-
-        // Only update plan and status — do NOT overwrite current_period_end.
-        // Plan swaps (upgrade/downgrade) don't reset the billing cycle.
-        await supabaseAdmin
-          .from("user_plans")
-          .update({
-            plan,
-            subscription_status: mappedStatus,
-          })
-          .eq("user_id", userId);
-
-        logger.info({ userId, plan, status: mappedStatus }, "Subscription updated");
-        break;
-      }
-
-      case "subscription_payment_success": {
-        // Payment went through — mark as active, clear past_due_since
+      case "subscription.renewed": {
+        // Renewed for the next period — keep active, roll the billing window forward.
         await supabaseAdmin
           .from("user_plans")
           .update({
@@ -179,13 +102,23 @@ router.post("/", async (req: Request, res: Response) => {
             past_due_since: null,
           })
           .eq("user_id", userId);
+        logger.info({ userId }, "Subscription renewed");
+        break;
+      }
 
+      case "payment.succeeded": {
+        // Payment went through — mark active, clear past_due.
+        await supabaseAdmin
+          .from("user_plans")
+          .update({ subscription_status: "active", past_due_since: null })
+          .eq("user_id", userId);
         logger.info({ userId }, "Payment successful — subscription active");
         break;
       }
 
-      case "subscription_payment_failed": {
-        // Record when payment first failed (don't overwrite if already past_due)
+      case "payment.failed":
+      case "subscription.on_hold": {
+        // Record when the account first went past_due (don't overwrite if already so).
         const { data: existingPlan } = await supabaseAdmin
           .from("user_plans")
           .select("subscription_status, past_due_since")
@@ -193,7 +126,6 @@ router.post("/", async (req: Request, res: Response) => {
           .single();
 
         const updateData: Record<string, unknown> = { subscription_status: "past_due" };
-        // Only set past_due_since if not already in past_due state
         if (!existingPlan?.past_due_since || existingPlan.subscription_status !== "past_due") {
           updateData.past_due_since = new Date().toISOString();
         }
@@ -202,54 +134,56 @@ router.post("/", async (req: Request, res: Response) => {
           .from("user_plans")
           .update(updateData)
           .eq("user_id", userId);
-
-        logger.info({ userId }, "Payment failed — marked past_due");
+        logger.info({ userId }, "Payment failed / on hold — marked past_due");
         break;
       }
 
-      case "subscription_cancelled": {
-        // Lemon Squeezy sends this when cancellation is scheduled
-        // User keeps access until current_period_end
+      case "subscription.plan_changed": {
+        // Upgrade/downgrade — update plan + status, keep the existing billing window.
+        const plan = getPlanFromProduct(productId);
+        await supabaseAdmin
+          .from("user_plans")
+          .update({ plan, subscription_status: mapDodoStatus(status) })
+          .eq("user_id", userId);
+        logger.info({ userId, plan }, "Subscription plan changed");
+        break;
+      }
+
+      case "subscription.cancelled": {
+        // Cancellation scheduled — user keeps access until current_period_end.
         await supabaseAdmin
           .from("user_plans")
           .update({
             subscription_status: "cancelled",
-            current_period_end: currentPeriodEnd || attributes?.ends_at,
+            current_period_end: currentPeriodEnd,
           })
           .eq("user_id", userId);
-
         logger.info({ userId }, "Subscription cancelled");
         break;
       }
 
-      case "subscription_expired": {
+      case "subscription.expired": {
         await supabaseAdmin
           .from("user_plans")
           .update({ subscription_status: "expired" })
           .eq("user_id", userId);
-
         logger.info({ userId }, "Subscription expired");
         break;
       }
 
-      case "subscription_resumed": {
-        await supabaseAdmin
-          .from("user_plans")
-          .update({ subscription_status: "active", past_due_since: null, cancel_reason: null })
-          .eq("user_id", userId);
-
-        logger.info({ userId }, "Subscription resumed");
-        break;
-      }
-
+      // subscription.updated fires on ANY field change (including our own cancel/reactivate
+      // toggles), so acting on it would race the dedicated events above. Intentionally a no-op.
+      case "subscription.updated":
+      case "subscription.update_payment_method":
+      case "subscription.failed":
       default:
-        logger.info({ eventName }, "Unhandled webhook event");
+        logger.info({ eventType }, "Unhandled/no-op webhook event");
     }
 
     res.status(200).json({ received: true });
   } catch (err: any) {
     logger.error({ err: err.message }, "Webhook processing error");
-    // Always return 200 to prevent Lemon Squeezy from retrying
+    // Always return 200 so Dodo doesn't retry a message we've already logged as failed.
     res.status(200).json({ received: true });
   }
 });

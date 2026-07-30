@@ -19,11 +19,33 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
   // on all cards, no "Current Plan", no upgrade/downgrade confirmation (buying = a fresh checkout).
   const noPaidPlan = isExpired || !hasPlan || !!isOnTrial;
   const [loading, setLoading] = useState<string | null>(null);
+  const [confirmPlan, setConfirmPlan] = useState<string | null>(null);
+  // When set, Dodo's full (2-column) hosted checkout is embedded in this modal via iframe.
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
-  const [confirmPlan, setConfirmPlan] = useState<string | null>(null);
 
   const PLAN_PRICES: Record<string, number> = { starter: 39, growth: 79, agency: 129 };
+
+  // Detect the post-payment redirect. Dodo navigates the iframe to our return_url
+  // (/settings?payment=success) — that's same-origin, so once it lands there we can read
+  // the URL and finish in the top window. While it's on Dodo's domain the read throws
+  // (cross-origin) and is ignored.
+  function handleIframeLoad(e: React.SyntheticEvent<HTMLIFrameElement>) {
+    setIframeLoaded(true);
+    try {
+      const iframeUrl = e.currentTarget.contentWindow?.location.href;
+      if (iframeUrl && iframeUrl.includes("/settings?payment=success")) {
+        window.location.href = "/settings?payment=success";
+      }
+    } catch {
+      // Cross-origin (still on Dodo's checkout) — nothing to do.
+    }
+  }
+
+  function closeCheckout() {
+    setCheckoutUrl(null);
+    setIframeLoaded(false);
+  }
 
   function handlePlanClick(selectedPlan: string) {
     // Only a paying subscriber switching plans sees the proration confirmation.
@@ -45,6 +67,8 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
         onClose();
         window.location.reload();
       } else if (res.checkoutUrl) {
+        // Embed Dodo's inline checkout inside this modal. Setting the URL renders the
+        // container, and the effect above mounts the checkout into it.
         setCheckoutUrl(res.checkoutUrl);
       } else {
         onToast("Failed to create checkout session", "error");
@@ -71,56 +95,25 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
       setLoading(null);
     }
   }
-  // Detect when iframe navigates to success URL (user clicks Continue in LS)
-  function handleIframeLoad(e: React.SyntheticEvent<HTMLIFrameElement>) {
-    try {
-      const iframeUrl = e.currentTarget.contentWindow?.location.href;
-      if (iframeUrl && iframeUrl.includes("/settings?payment=success")) {
-        window.location.href = "/settings?payment=success";
-      }
-    } catch {
-      // Cross-origin - can't access iframe URL, ignore
-    }
-  }
-
-  // If checkout URL is set, show checkout inside the same modal shell
+  // Checkout view: Dodo's full 2-column hosted checkout embedded inside this modal.
   if (checkoutUrl) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={closeCheckout}>
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-        <div className="relative bg-white rounded-3xl shadow-2xl max-w-[1100px] w-full h-[calc(100vh-2.8rem)] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={() => { setCheckoutUrl(null); setIframeLoaded(false); }}
-            className="absolute top-4 right-4 z-10 w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all"
-          >
+        <div className="relative bg-white rounded-3xl shadow-2xl max-w-[1280px] w-full h-[calc(100vh-2.8rem)] overflow-hidden px-8" onClick={(e) => e.stopPropagation()}>
+          <button onClick={closeCheckout} className="absolute top-4 right-4 z-10 w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
 
-          {/* Loading animation while iframe loads */}
           {!iframeLoaded && (
             <div className="absolute inset-0 flex flex-col items-center justify-center z-[5]">
-              {/* Animated bars - equalizer style */}
               <div className="flex items-end gap-[7px] h-20">
                 {[0, 1, 2, 3, 4, 5, 6].map((i) => (
-                  <div
-                    key={i}
-                    className="w-[7px] rounded-full bg-gradient-to-t from-[#6962c4] to-[#a9a4e8]"
-                    style={{
-                      animation: "barWave 1s ease-in-out infinite",
-                      animationDelay: `${i * 0.1}s`,
-                      height: "16px",
-                    }}
-                  />
+                  <div key={i} className="w-[7px] rounded-full bg-gradient-to-t from-[#6962c4] to-[#a9a4e8]" style={{ animation: "barWave 1s ease-in-out infinite", animationDelay: `${i * 0.1}s`, height: "16px" }} />
                 ))}
               </div>
               <p className="mt-7 text-lg font-semibold text-gray-700">Loading Checkout...</p>
               <p className="mt-2 text-sm text-gray-400">Securely connecting to payment provider</p>
-              <div className="flex gap-1.5 mt-5">
-                <div className="w-2.5 h-2.5 rounded-full bg-[#6962c4] animate-bounce" style={{ animationDelay: "0ms" }} />
-                <div className="w-2.5 h-2.5 rounded-full bg-[#6962c4] animate-bounce" style={{ animationDelay: "150ms" }} />
-                <div className="w-2.5 h-2.5 rounded-full bg-[#6962c4] animate-bounce" style={{ animationDelay: "300ms" }} />
-              </div>
-
               <style jsx>{`
                 @keyframes barWave {
                   0%, 100% { height: 16px; opacity: 0.4; }
@@ -134,10 +127,7 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
             src={checkoutUrl}
             className={`w-full h-full border-0 rounded-3xl transition-opacity duration-300 ${iframeLoaded ? "opacity-100" : "opacity-0"}`}
             title="Checkout"
-            onLoad={(e) => {
-              setIframeLoaded(true);
-              handleIframeLoad(e);
-            }}
+            onLoad={handleIframeLoad}
           />
         </div>
       </div>

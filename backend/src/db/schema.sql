@@ -158,8 +158,10 @@ create table if not exists user_plans (
   service_type text not null default 'web_dev' check (service_type in ('web_dev', 'seo', 'digital_marketing', 'social_media')),
   subscription_status text not null default 'none' check (subscription_status in ('none', 'trialing', 'active', 'cancelled', 'past_due', 'paused', 'expired')),
   trial_ends_at timestamp with time zone default null,
-  lemon_squeezy_subscription_id text,
-  lemon_squeezy_customer_id text,
+  lemon_squeezy_subscription_id text, -- legacy (pre-Dodo); kept for historical rows
+  lemon_squeezy_customer_id text,      -- legacy (pre-Dodo); kept for historical rows
+  dodo_subscription_id text,           -- Dodo Payments subscription id
+  dodo_customer_id text,               -- Dodo Payments customer id (for portal sessions)
   current_period_end timestamp with time zone,
   current_period_start timestamp with time zone,
   gmail_connected_at timestamp with time zone,
@@ -611,3 +613,13 @@ alter table emails add column if not exists thread_id text;  -- Gmail API thread
 -- service-role security-definer RPCs that bypass RLS; the frontend never touches it,
 -- so no policies are needed. Closes a DoS vector (hijacking the queue lock via the anon key).
 alter table job_locks enable row level security;
+
+-- =============================================
+-- MIGRATION (2026-07): Dodo Payments (replaces Lemon Squeezy as the billing provider)
+-- Idempotent — safe to run on an existing database. Adds the Dodo id columns the
+-- billing routes + webhook write to. The legacy lemon_squeezy_* columns are left in
+-- place (unused) so historical rows keep their data. No other billing logic/columns
+-- change — trial, limits, access-gating, subscription_status all stay identical.
+-- =============================================
+alter table user_plans add column if not exists dodo_subscription_id text;
+alter table user_plans add column if not exists dodo_customer_id text;

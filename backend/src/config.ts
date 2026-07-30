@@ -21,12 +21,12 @@ const REQUIRED_ENV_VARS = [
 const OPTIONAL_ENV_VARS = [
   "BACKEND_URL", // Public backend URL for unsubscribe links — falls back to GMAIL_REDIRECT_URI origin
   "PAGESPEED_API_KEY", // Google PageSpeed Insights — free 25k/day
-  "LEMONSQUEEZY_API_KEY",
-  "LEMONSQUEEZY_STORE_ID",
-  "LEMONSQUEEZY_WEBHOOK_SECRET",
-  "LEMONSQUEEZY_STARTER_VARIANT_ID",
-  "LEMONSQUEEZY_GROWTH_VARIANT_ID",
-  "LEMONSQUEEZY_AGENCY_VARIANT_ID",
+  // Dodo Payments (billing). Product IDs come from Dodo Dashboard → Products.
+  "DODO_PAYMENTS_API_KEY",
+  "DODO_WEBHOOK_SECRET",
+  "DODO_STARTER_PRODUCT_ID",
+  "DODO_GROWTH_PRODUCT_ID",
+  "DODO_AGENCY_PRODUCT_ID",
 ];
 
 for (const key of OPTIONAL_ENV_VARS) {

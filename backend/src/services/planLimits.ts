@@ -379,8 +379,8 @@ export async function getUserPlan(userId: string): Promise<{
     if (
       plan2Data.subscription_status === "none" &&
       !plan2Data.trial_ends_at &&
-      !plan2Data.lemon_squeezy_subscription_id &&
-      !plan2Data.lemon_squeezy_customer_id
+      !plan2Data.dodo_subscription_id &&
+      !plan2Data.dodo_customer_id
     ) {
       const healTrialEnds = new Date(Date.now() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
       const { data: healed2, error: healErr2 } = await supabase
@@ -442,8 +442,8 @@ export async function getUserPlan(userId: string): Promise<{
   if (
     data.subscription_status === "none" &&
     !data.trial_ends_at &&
-    !data.lemon_squeezy_subscription_id &&
-    !data.lemon_squeezy_customer_id
+    !data.dodo_subscription_id &&
+    !data.dodo_customer_id
   ) {
     const trialEndsIso = new Date(Date.now() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const { data: healed, error: healErr } = await supabase

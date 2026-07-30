@@ -81,7 +81,7 @@ export default function PrivacyPolicyPage() {
                 <p>We track your plan type, number of leads found, emails sent, and feature usage to enforce plan limits and improve our Service. This data is associated with your account and is never sold or shared with third parties.</p>
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Payment Information</h3>
-                <p>Payment processing is handled entirely by Lemon Squeezy. We do not store your credit card number, CVV, or full payment details. We only receive a customer ID and subscription status from Lemon Squeezy to manage your plan.</p>
+                <p>Payment processing is handled entirely by Dodo Payments. We do not store your credit card number, CVV, or full payment details. We only receive a customer ID and subscription status from Dodo Payments to manage your plan.</p>
               </div>
 
               {/* Section 2 */}
@@ -90,7 +90,7 @@ export default function PrivacyPolicyPage() {
                 <ul className="list-disc list-inside space-y-2 ml-1">
                   <li><span className="font-medium text-white/80">Directly from you:</span> When you sign up, update your profile, upload CSV files, or configure email accounts.</li>
                   <li><span className="font-medium text-white/80">From third-party APIs:</span> We use Serper.dev and Google Maps to find publicly listed business information based on your search queries. Only your search terms (niche and location) are shared — not your personal data.</li>
-                  <li><span className="font-medium text-white/80">From public websites:</span> We scrape publicly available contact information from business websites that are already indexed by search engines. We only collect information that businesses have made publicly available.</li>
+                  <li><span className="font-medium text-white/80">From public websites:</span> We collect publicly available business contact information from company websites that are already indexed by search engines. We only collect information that businesses have made publicly available.</li>
                   <li><span className="font-medium text-white/80">From Google OAuth:</span> When you connect Gmail, we request the minimum permissions necessary to send emails on your behalf. We do not read, scan, or store the content of your Gmail inbox.</li>
                 </ul>
               </div>
@@ -155,7 +155,7 @@ export default function PrivacyPolicyPage() {
                   <li>Row Level Security (RLS) is enforced on all database tables — users can only access their own data</li>
                   <li>API access is protected with JWT authentication, rate limiting, and input validation on every endpoint</li>
                   <li>OAuth state parameters are HMAC-signed to prevent cross-site request forgery (CSRF) attacks</li>
-                  <li>SSRF protection is implemented on our web scraping infrastructure to prevent internal network access</li>
+                  <li>SSRF protection is implemented on our website analysis infrastructure to prevent internal network access</li>
                 </ul>
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Data Breach Notification</h3>
@@ -189,7 +189,7 @@ export default function PrivacyPolicyPage() {
                         <td className="px-4 py-2.5">Standard Contractual Clauses</td>
                       </tr>
                       <tr>
-                        <td className="px-4 py-2.5 font-medium text-white/80">Lemon Squeezy</td>
+                        <td className="px-4 py-2.5 font-medium text-white/80">Dodo Payments</td>
                         <td className="px-4 py-2.5">United States</td>
                         <td className="px-4 py-2.5">Standard Contractual Clauses</td>
                       </tr>
@@ -243,7 +243,7 @@ export default function PrivacyPolicyPage() {
                         <td className="px-4 py-2.5">Search queries only — niche and location</td>
                       </tr>
                       <tr>
-                        <td className="px-4 py-2.5 font-medium text-white/80">Lemon Squeezy</td>
+                        <td className="px-4 py-2.5 font-medium text-white/80">Dodo Payments</td>
                         <td className="px-4 py-2.5">Payment processing and subscription management</td>
                         <td className="px-4 py-2.5">Billing name, email address, payment method</td>
                       </tr>
@@ -308,7 +308,7 @@ export default function PrivacyPolicyPage() {
                       </tr>
                       <tr>
                         <td className="px-4 py-2.5 font-medium text-white/80">Payment records</td>
-                        <td className="px-4 py-2.5">Retained as required by financial and tax regulations — typically 7 years. Payment processing records are held by Lemon Squeezy</td>
+                        <td className="px-4 py-2.5">Retained as required by financial and tax regulations — typically 7 years. Payment processing records are held by Dodo Payments</td>
                       </tr>
                       <tr>
                         <td className="px-4 py-2.5 font-medium text-white/80">Usage and analytics data</td>
@@ -385,8 +385,8 @@ export default function PrivacyPolicyPage() {
 
               {/* Section 11 */}
               <div>
-                <h2 className="text-lg font-semibold text-white mb-3">11. Cold Email Compliance</h2>
-                <p className="mb-3">Inertia Leads is a tool that enables users to send outreach emails to publicly listed businesses. Users are solely responsible for ensuring their use of the Service complies with all applicable laws and regulations in their jurisdiction, including but not limited to:</p>
+                <h2 className="text-lg font-semibold text-white mb-3">11. Email Outreach Compliance</h2>
+                <p className="mb-3">Inertia Leads is a tool that enables users to send business-to-business outreach emails to publicly listed businesses from their own connected email account. Users are solely responsible for ensuring their use of the Service complies with all applicable laws and regulations in their jurisdiction, including but not limited to:</p>
                 <div className="overflow-x-auto border border-white/[0.20] rounded-xl overflow-hidden">
                   <table className="w-full text-sm">
                     <thead>

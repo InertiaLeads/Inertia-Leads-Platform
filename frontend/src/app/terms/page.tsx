@@ -52,7 +52,7 @@ export default function TermsOfServicePage() {
               </div>
 
               <p>
-                These Terms of Service (&quot;Terms&quot;) govern your access to and use of Inertia Leads (the &quot;Service&quot;), an AI-powered lead generation and cold email outreach platform. By creating an account or using the Service, you agree to be bound by these Terms and our <Link href="/privacy" className="text-violet-400 hover:text-violet-300 underline">Privacy Policy</Link>, which is incorporated herein by reference.
+                These Terms of Service (&quot;Terms&quot;) govern your access to and use of Inertia Leads (the &quot;Service&quot;), an AI-powered B2B lead generation and email outreach platform. By creating an account or using the Service, you agree to be bound by these Terms and our <Link href="/privacy" className="text-violet-400 hover:text-violet-300 underline">Privacy Policy</Link>, which is incorporated herein by reference.
               </p>
               <p>
                 If you do not agree to these Terms, do not create an account or use the Service. If you are using the Service on behalf of an organisation, you represent that you have the authority to bind that organisation to these Terms.
@@ -61,11 +61,11 @@ export default function TermsOfServicePage() {
               {/* Section 1 */}
               <div>
                 <h2 className="text-lg font-semibold text-white mb-3">1. Description of Service</h2>
-                <p className="mb-3">Inertia Leads is an AI-powered lead generation and cold email outreach platform that allows users to:</p>
+                <p className="mb-3">Inertia Leads is an AI-powered B2B lead generation and email outreach platform that allows users to:</p>
                 <ul className="list-disc list-inside space-y-2 ml-1">
                   <li>Find business leads by searching niches and locations via Google Maps data</li>
-                  <li>Enrich leads by scraping publicly available contact information from business websites</li>
-                  <li>Generate personalized cold emails and call scripts using AI based on lead website analysis</li>
+                  <li>Enrich leads by collecting publicly available business contact information from company websites</li>
+                  <li>Generate personalized outreach emails and call scripts using AI based on lead website analysis</li>
                   <li>Generate personalized website audit reports for each lead highlighting their digital gaps</li>
                   <li>Send emails via connected Gmail or SMTP accounts with automated scheduling and business hours awareness</li>
                   <li>Track campaign performance including sends, replies, lead scores, and audit report views</li>
@@ -113,7 +113,7 @@ export default function TermsOfServicePage() {
                   <li>Harass, threaten, intimidate, or send abusive, offensive, or harmful content to any recipient</li>
                   <li>Send emails containing malware, phishing links, fraudulent content, or deceptive claims</li>
                   <li>Impersonate another person, business, or entity or misrepresent your identity or affiliation</li>
-                  <li>Collect, scrape, or use data for any purpose other than legitimate business outreach to publicly listed businesses</li>
+                  <li>Collect, extract, or use data for any purpose other than legitimate business outreach to publicly listed businesses</li>
                   <li>Resell, redistribute, license, or share lead data obtained through our Service with any third party</li>
                   <li>Attempt to circumvent, bypass, or disable rate limits, plan restrictions, or security measures</li>
                   <li>Use the Service in any way that could damage, disable, overburden, or impair our infrastructure or servers</li>
@@ -186,7 +186,8 @@ export default function TermsOfServicePage() {
                   <li>You may disconnect your email accounts at any time from the Settings page, which permanently and immediately deletes all stored credentials</li>
                   <li>You are responsible for ensuring your use of connected email accounts complies with the terms of service of your email provider (Google, Microsoft, or other)</li>
                   <li>We are not responsible for any sending limits, rate limiting, suspensions, bans, or restrictions imposed by Gmail, Microsoft, or any other email provider as a result of your usage patterns or content</li>
-                  <li>The email warmup feature is provided to help improve deliverability and does not guarantee inbox placement. Results may vary depending on your email provider, sending patterns, and content</li>
+                  <li>The deliverability ramp-up feature is provided to help improve inbox placement over time by gradually increasing your daily sending volume from your own connected email account. Results may vary depending on your email provider, sending patterns, and content. Inertia Leads does not guarantee any specific deliverability rate or inbox placement outcome</li>
+                  <li>Inertia Leads does not send, receive, or exchange any artificial or automated email traffic between accounts on your behalf. Every email sent through the Service is a message you have created and approved, addressed to a business recipient you selected</li>
                 </ul>
               </div>
 
@@ -199,15 +200,15 @@ export default function TermsOfServicePage() {
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Billing</h3>
                 <ul className="list-disc list-inside space-y-2 ml-1">
-                  <li>Subscriptions are billed monthly on a recurring basis and processed through our payment provider Lemon Squeezy, who acts as Merchant of Record</li>
-                  <li>Prices shown exclude applicable taxes. VAT, GST, sales tax, and other applicable taxes are calculated and collected by Lemon Squeezy based on your location</li>
+                  <li>Subscriptions are billed monthly on a recurring basis and processed through our payment provider Dodo Payments, who acts as Merchant of Record</li>
+                  <li>Prices shown exclude applicable taxes. VAT, GST, sales tax, and other applicable taxes are calculated and collected by Dodo Payments based on your location</li>
                   <li>Your subscription renews automatically each month unless cancelled</li>
-                  <li>By providing payment details, you authorise Lemon Squeezy to charge your payment method on a recurring monthly basis</li>
+                  <li>By providing payment details, you authorise Dodo Payments to charge your payment method on a recurring monthly basis</li>
                 </ul>
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Cancellation</h3>
                 <ul className="list-disc list-inside space-y-2 ml-1">
-                  <li>You may cancel your subscription at any time through your account Settings or through the Lemon Squeezy customer portal</li>
+                  <li>You may cancel your subscription at any time through your account Settings or through the Dodo Payments customer portal</li>
                   <li>Cancellation takes effect at the end of your current billing period. You will retain full access to all your plan features until that date</li>
                   <li>No partial refunds or credits will be issued for the remaining days in your current billing cycle upon cancellation</li>
                   <li>Once the billing period ends, your account will lose access to paid features and you will not be charged again unless you resubscribe</li>
@@ -219,7 +220,7 @@ export default function TermsOfServicePage() {
                 <ul className="list-disc list-inside space-y-2 ml-1">
                   <li>All subscription payments are non-refundable. When you cancel your subscription, you will continue to have access to your plan until the end of the current billing period — no refund will be issued for the remaining time</li>
                   <li>We do not offer refunds for partial months, unused features, or any period where the Service was available and accessible to you</li>
-                  <li>If you upgrade or downgrade your plan mid-cycle, billing adjustments (proration) are handled automatically by Lemon Squeezy. No separate refund is issued for plan changes</li>
+                  <li>If you upgrade or downgrade your plan mid-cycle, billing adjustments (proration) are handled automatically by Dodo Payments. No separate refund is issued for plan changes</li>
                   <li>In exceptional circumstances (e.g. extended service outage caused solely by us), we may issue discretionary credits or refunds at our sole judgement. Contact <a href="mailto:info@inertialeads.com" className="text-violet-400 hover:text-violet-300 underline">info@inertialeads.com</a> to request consideration</li>
                 </ul>
 
@@ -353,14 +354,14 @@ export default function TermsOfServicePage() {
               {/* Section 17 */}
               <div>
                 <h2 className="text-lg font-semibold text-white mb-3">17. Force Majeure</h2>
-                <p className="mb-3">We are not liable for any failure or delay in performing our obligations under these Terms where such failure or delay results from causes beyond our reasonable control, including but not limited to acts of God, natural disasters, pandemic, war, terrorism, government action, internet outages, power failures, third-party service outages (including Google, OpenAI, Supabase, or Lemon Squeezy), or other events beyond our reasonable control.</p>
+                <p className="mb-3">We are not liable for any failure or delay in performing our obligations under these Terms where such failure or delay results from causes beyond our reasonable control, including but not limited to acts of God, natural disasters, pandemic, war, terrorism, government action, internet outages, power failures, third-party service outages (including Google, OpenAI, Supabase, or Dodo Payments), or other events beyond our reasonable control.</p>
                 <p>In such circumstances we will use reasonable endeavours to resume normal service as quickly as possible and will notify affected users where practicable.</p>
               </div>
 
               {/* Section 18 */}
               <div>
                 <h2 className="text-lg font-semibold text-white mb-3">18. Third-Party Services and Links</h2>
-                <p className="mb-3">The Service integrates with and relies upon third-party services including Google Gmail API, OpenAI, Supabase, Serper.dev, and Lemon Squeezy. Your use of these third-party services is subject to their respective terms of service and privacy policies. We are not responsible for the practices, availability, or content of any third-party service.</p>
+                <p className="mb-3">The Service integrates with and relies upon third-party services including Google Gmail API, OpenAI, Supabase, Serper.dev, and Dodo Payments. Your use of these third-party services is subject to their respective terms of service and privacy policies. We are not responsible for the practices, availability, or content of any third-party service.</p>
                 <p>The Service may contain links to third-party websites. These links are provided for convenience only. We do not endorse, control, or assume responsibility for the content or practices of any linked third-party website.</p>
               </div>
 

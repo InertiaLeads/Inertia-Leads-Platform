@@ -481,7 +481,7 @@ function BrandingSide() {
         <img src="/images/logo-3.png" alt="Inertia Leads" className="h-16" />
       </div>
       <p className="text-lg text-white/60 mb-12 max-w-md text-center mx-auto">
-        AI-Powered Lead Generation & Cold Email Outreach
+        AI-Powered Lead Generation & B2B Outreach Platform
       </p>
 
       <div className="space-y-5">
@@ -508,7 +508,7 @@ function BrandingSide() {
           <div>
             <h3 className="font-semibold text-base text-white">AI-Generated Emails</h3>
             <p className="text-white/40 text-sm mt-1">
-              Personalized cold emails written by AI — with automated follow-ups that land in inboxes.
+              Personalized outreach emails written by AI — with automated follow-ups that land in inboxes.
             </p>
           </div>
         </div>
@@ -522,7 +522,7 @@ function BrandingSide() {
           <div>
             <h3 className="font-semibold text-base text-white">Send on Autopilot</h3>
             <p className="text-white/40 text-sm mt-1">
-              Smart inbox rotation, warmup protection, and business-hours scheduling — all handled for you.
+              Smart inbox rotation, deliverability protection, and business-hours scheduling — all handled for you.
             </p>
           </div>
         </div>

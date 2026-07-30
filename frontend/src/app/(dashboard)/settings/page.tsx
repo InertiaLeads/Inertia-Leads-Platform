@@ -222,6 +222,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
   const [showPricingModal, setShowPricingModal] = useState(false);
+  const [showPaymentSuccess, setShowPaymentSuccess] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -318,6 +319,18 @@ export default function SettingsPage() {
       document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 400);
     return () => clearTimeout(timer);
+  }, []);
+
+  // Returning from Dodo checkout (?payment=success): show an in-app success card so the
+  // user gets confirmation inside the app instead of on Dodo's page. Strip the query
+  // params afterwards so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("payment") === "success") {
+      setShowPaymentSuccess(true);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
 
   useEffect(() => {
@@ -1499,6 +1512,49 @@ export default function SettingsPage() {
         {/* Pricing Modal */}
         {showPricingModal && (
           <PricingModal plan={plan} hasPlan={hasPlan} isExpired={isExpired} isPastDue={isPastDue} isOnTrial={isOnTrial} onClose={() => setShowPricingModal(false)} onToast={toast.addToast} />
+        )}
+
+        {/* In-app payment success card (shown on return from Dodo checkout) */}
+        {showPaymentSuccess && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => window.location.reload()} />
+            <div
+              className="relative w-full max-w-md overflow-hidden rounded-[28px] bg-white shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+              style={{ animation: "successPop .35s cubic-bezier(.2,.8,.2,1)" }}
+            >
+              <div className="px-8 pt-8 pb-8 text-center">
+                {/* animated check */}
+                <div className="relative mx-auto mb-6 h-20 w-20">
+                  <span className="absolute inset-0 rounded-full bg-green-400/30 animate-ping" />
+                  <span className="absolute inset-0 flex items-center justify-center">
+                    <span className="flex h-16 w-16 items-center justify-center rounded-full bg-green-500 shadow-lg shadow-green-500/30">
+                      <svg className="h-9 w-9 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    </span>
+                  </span>
+                </div>
+                <h2 className="text-2xl font-extrabold text-gray-900">Payment Successful</h2>
+                <p className="mx-auto mt-2.5 max-w-xs text-sm leading-relaxed text-gray-500">
+                  Thank you! Your subscription is now active. It may take a few seconds to reflect on your account.
+                </p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="mt-7 w-full rounded-2xl py-3.5 font-semibold text-white shadow-lg shadow-[#6962c4]/25 transition-all hover:opacity-90 active:scale-[.98]"
+                  style={{ background: "linear-gradient(135deg,#3d3580 0%,#6962c4 100%)" }}
+                >
+                  Continue
+                </button>
+              </div>
+              <style jsx>{`
+                @keyframes successPop {
+                  0% { opacity: 0; transform: scale(.92) translateY(8px); }
+                  100% { opacity: 1; transform: scale(1) translateY(0); }
+                }
+              `}</style>
+            </div>
+          </div>
         )}
 
         {/* Cancel Plan Modal */}
