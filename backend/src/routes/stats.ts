@@ -103,6 +103,7 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
       currentPeriodStart: planInfo.currentPeriodStart,
       pastDueSince: planInfo.pastDueSince,
       trialDaysLeft: planInfo.trialDaysLeft,
+      timezone: planInfo.timezone,
       features: planInfo.features,
       planLabel: planInfo.planLabel,
       priceMonthly: planInfo.priceMonthly,

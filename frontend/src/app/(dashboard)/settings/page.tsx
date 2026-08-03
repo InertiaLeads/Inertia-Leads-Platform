@@ -220,6 +220,11 @@ export default function SettingsPage() {
   const [periodStartDate, setPeriodStartDate] = useState<string | null>(null);
   const [isOnTrial, setIsOnTrial] = useState(false);
   const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
+  // When the free trial ended. Distinct from the billing period — the "Trial ended" date on
+  // the expired card must come from here, not from current_period_end.
+  const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null);
+  // The user's timezone as the backend knows it; every billing date is rendered in it.
+  const [userTimezone, setUserTimezone] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
   const [showPricingModal, setShowPricingModal] = useState(false);
@@ -395,13 +400,15 @@ export default function SettingsPage() {
       setProfileAvatarUrl(user?.user_metadata?.avatar_url || "");
       setProfileEmail(user?.email || "");
       if (user?.created_at) {
+        // "Member since" is month+year only, so the timezone can't shift it meaningfully
+        // except on the 1st — still worth using the browser zone consistently here.
         setMemberSince(new Date(user.created_at).toLocaleDateString("en-US", { month: "long", year: "numeric" }));
       }
       if (!user?.user_metadata?.full_name || !user?.user_metadata?.business_address) setProfileEditing(true);
     };
     loadProfile();
     // Load service type and subscription status from stats
-    apiGet<{ serviceType?: string; subscriptionStatus?: string; isOnTrial?: boolean; trialDaysLeft?: number; currentPeriodEnd?: string; currentPeriodStart?: string }>("/stats").then(async (data) => {
+    apiGet<{ serviceType?: string; subscriptionStatus?: string; isOnTrial?: boolean; trialDaysLeft?: number; trialEndsAt?: string | null; currentPeriodEnd?: string; currentPeriodStart?: string; timezone?: string }>("/stats").then(async (data) => {
       // A brand-new user has NOT chosen a service yet — even though the DB carries a
       // "web_dev" fallback, we must not pre-select it for them. Only show a selected
       // service once they've explicitly picked one (tracked by the service_type_set flag).
@@ -423,6 +430,8 @@ export default function SettingsPage() {
       setTrialDaysLeft(data.trialDaysLeft ?? null);
       setPeriodEndDate(data.currentPeriodEnd || null);
       setPeriodStartDate(data.currentPeriodStart || null);
+      setTrialEndsAt(data.trialEndsAt || null);
+      setUserTimezone(data.timezone || null);
 
       if (data.subscriptionStatus === "cancelled" && data.currentPeriodEnd && new Date(data.currentPeriodEnd) > new Date()) {
         // Cancelled but still has access until period ends
@@ -756,13 +765,31 @@ export default function SettingsPage() {
     return { label: `Warmup Week ${week} (Day ${days}/21)`, color: "yellow" };
   }
 
-  // Effective plan expiry: use the real billing period end when available,
-  // otherwise derive it as purchase date + 30 days (one billing cycle).
-  const effectivePeriodEnd: Date | null = periodEndDate
-    ? new Date(periodEndDate)
-    : periodStartDate
-      ? new Date(new Date(periodStartDate).getTime() + 30 * 24 * 60 * 60 * 1000)
-      : null;
+  // Plan expiry — ONLY the real billing period end from Dodo.
+  //
+  // This used to fall back to `periodStartDate + 30 days` when current_period_end was
+  // missing. That invented a date and displayed it as fact: a row with a stale
+  // current_period_start showed "Expires Aug 23, 2026" for a plan that had already lapsed,
+  // and the same value leaked onto the trial card as a future "Trial ended" date. A dash is
+  // honest; a fabricated date is not. Dodo always sends next_billing_date on activation and
+  // renewal, so a real subscription has this populated.
+  const effectivePeriodEnd: Date | null = periodEndDate ? new Date(periodEndDate) : null;
+
+  // Format a date in the USER's timezone (from /stats), not the browser's. The backend
+  // resets daily limits at midnight in this zone, so rendering in any other zone can show
+  // a different calendar day than the app actually operates on. Falls back to the browser
+  // zone only if the timezone is missing or rejected by Intl.
+  const formatUserDate = (value: string | Date | null | undefined): string => {
+    if (!value) return "—";
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return "—";
+    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+    try {
+      return d.toLocaleDateString("en-US", userTimezone ? { ...opts, timeZone: userTimezone } : opts);
+    } catch {
+      return d.toLocaleDateString("en-US", opts);
+    }
+  };
 
   return (
     <div>
@@ -1213,18 +1240,37 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
-                  {/* Previous plan info */}
+                  {/* Previous plan info.
+                      Two separate timelines feed this card and they must not be mixed up:
+                      a lapsed TRIAL is dated by trial_ends_at, a lapsed PAID plan by the
+                      billing period. Using effectivePeriodEnd for both showed a trial as
+                      "ended Aug 23" — a future date derived from current_period_start + 30d.
+                      The plan name/price is only shown for a real paid plan; during the
+                      trial the `plan` column just mirrors the trial tier, so printing it
+                      as "Trial plan: Starter $39/mo" invented a plan the user never had. */}
                   <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-100">
                     <div>
-                      <p className="text-[10px] text-gray-400 mb-0.5">{isTrialExpired ? "Trial plan" : "Previous plan"}</p>
-                      <span className="text-sm font-bold text-gray-900 capitalize">{plan}</span>
-                      <span className="text-xs text-gray-400 ml-1.5">
-                        {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}/mo
-                      </span>
+                      {isTrialExpired ? (
+                        <>
+                          <p className="text-[10px] text-gray-400 mb-0.5">Free trial</p>
+                          <span className="text-sm font-bold text-gray-900">7 days</span>
+                          <span className="text-xs text-gray-400 ml-1.5">no card required</span>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-[10px] text-gray-400 mb-0.5">Previous plan</p>
+                          <span className="text-sm font-bold text-gray-900 capitalize">{plan}</span>
+                          <span className="text-xs text-gray-400 ml-1.5">
+                            {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}/mo
+                          </span>
+                        </>
+                      )}
                     </div>
                     <div className="text-right">
                       <p className="text-[10px] text-gray-400">{isTrialExpired ? "Trial ended" : "Expired on"}</p>
-                      <p className="text-xs font-semibold text-red-600">{effectivePeriodEnd ? effectivePeriodEnd.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</p>
+                      <p className="text-xs font-semibold text-red-600">
+                        {formatUserDate(isTrialExpired ? trialEndsAt : effectivePeriodEnd)}
+                      </p>
                     </div>
                   </div>
 
@@ -1305,7 +1351,7 @@ export default function SettingsPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                         <div>
-                          <p className="text-[11px] font-bold text-gray-800">Your plan ends on {new Date(periodEndDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                          <p className="text-[11px] font-bold text-gray-800">Your plan ends on {formatUserDate(periodEndDate)}</p>
                           <p className="text-[10px] text-gray-500 mt-0.5">You still have full access until then. Reactivate to keep your plan.</p>
                         </div>
                       </div>
@@ -1333,8 +1379,8 @@ export default function SettingsPage() {
                         <span className="text-xs text-gray-400 ml-1">per month</span>
                       </div>
                       <div className="text-right">
-                        <p className="text-[10px] text-gray-400">Purchased: <span className="text-gray-600 font-medium">{periodStartDate ? new Date(periodStartDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</span></p>
-                        <p className="text-[10px] text-gray-400">{isCancelling ? "Ends" : "Expires"}: <span className={`font-medium ${isCancelling ? "text-orange-600" : "text-gray-600"}`}>{effectivePeriodEnd ? effectivePeriodEnd.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}</span></p>
+                        <p className="text-[10px] text-gray-400">Purchased: <span className="text-gray-600 font-medium">{formatUserDate(periodStartDate)}</span></p>
+                        <p className="text-[10px] text-gray-400">{isCancelling ? "Ends" : "Expires"}: <span className={`font-medium ${isCancelling ? "text-orange-600" : "text-gray-600"}`}>{formatUserDate(effectivePeriodEnd)}</span></p>
                       </div>
                     </div>
                   )}

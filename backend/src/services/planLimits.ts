@@ -920,6 +920,10 @@ export async function getPlanInfo(userId: string): Promise<{
   currentPeriodStart: string | null;
   pastDueSince: string | null;
   trialDaysLeft: number;
+  // The user's timezone. Exposed so the UI renders billing dates in the SAME zone the
+  // backend uses for daily-limit resets — otherwise a date can read as one day in the
+  // browser's zone and another in the app's.
+  timezone: string;
   features: FeatureAccess;
   planLabel: string;
   priceMonthly: number;
@@ -969,6 +973,7 @@ export async function getPlanInfo(userId: string): Promise<{
     currentPeriodStart: userPlan.currentPeriodStart,
     pastDueSince: userPlan.pastDueSince,
     trialDaysLeft,
+    timezone: userPlan.timezone,
     features: getFeatureAccess(userPlan.plan, userPlan.isOnTrial),
     planLabel: planLabels[userPlan.plan],
     priceMonthly: config.priceMonthly,
