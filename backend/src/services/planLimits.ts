@@ -157,7 +157,9 @@ export function hasActiveSubscription(
   subscriptionStatus: SubscriptionStatus,
   trialEndsAt: string | null,
   currentPeriodEnd: string | null,
-  pastDueSince: string | null
+  // Retained for signature compatibility with existing callers. Unused since the past_due
+  // grace period was removed — a failed payment now revokes access immediately.
+  _pastDueSince?: string | null
 ): boolean {
   switch (subscriptionStatus) {
     case "active":
@@ -172,10 +174,11 @@ export function hasActiveSubscription(
       return false;
 
     case "past_due":
-      // 3-day grace period from when payment first failed
-      if (!pastDueSince) return true; // If no timestamp recorded, give benefit of doubt
-      const gracePeriodMs = 3 * 24 * 60 * 60 * 1000; // 3 days
-      return (Date.now() - new Date(pastDueSince).getTime()) < gracePeriodMs;
+      // No grace period, by product decision: a failed payment means no access, full stop.
+      // The user re-subscribes from the pricing modal rather than being nursed through a
+      // dunning window. Kept as a case (rather than deleted) because mapDodoStatus still
+      // translates Dodo's `on_hold` to past_due, so the value can still reach us.
+      return false;
 
     case "cancelled":
       // Access continues until end of paid period
@@ -211,7 +214,8 @@ export async function checkSubscriptionAccess(userId: string): Promise<{
       case "expired": reason = "Your subscription has expired. Please renew."; break;
       case "cancelled": reason = "Your subscription period has ended. Please renew."; break;
       case "paused": reason = "Your subscription is paused. Please resume to continue."; break;
-      case "past_due": reason = "Payment failed. Please update your payment method."; break;
+      // No in-app payment-method update any more — a failed payment just means re-subscribe.
+      case "past_due": reason = "Your payment failed. Please choose a plan to continue."; break;
       default: reason = "Subscription inactive.";
     }
   }

@@ -28,8 +28,11 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
       .eq("user_id", userId)
       .single();
 
+    // past_due is deliberately NOT here. A failed payment now revokes access outright, so
+    // such a user must go through a FRESH checkout rather than changePlan — swapping the
+    // plan on a subscription whose payment just bounced would fail at Dodo anyway.
     const hasActiveSubscription = userPlan?.dodo_subscription_id &&
-      ["active", "trialing", "past_due"].includes(userPlan?.subscription_status || "");
+      ["active", "trialing"].includes(userPlan?.subscription_status || "");
 
     // If user has an active subscription, swap the plan in place (no new checkout needed).
     // prorated_immediately = charge/credit the difference now, matching the previous

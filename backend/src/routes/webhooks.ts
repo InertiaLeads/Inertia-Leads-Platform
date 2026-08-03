@@ -118,23 +118,36 @@ router.post("/", async (req: Request, res: Response) => {
 
       case "payment.failed":
       case "subscription.on_hold": {
-        // Record when the account first went past_due (don't overwrite if already so).
+        // A failed payment revokes access immediately — no dunning, no grace period.
+        // The user simply re-subscribes from the pricing modal. (Deliberate product
+        // decision: a "past due, fix your card within N days" state was judged more
+        // confusing than useful for this audience.)
         const { data: existingPlan } = await supabaseAdmin
           .from("user_plans")
-          .select("subscription_status, past_due_since")
+          .select("subscription_status")
           .eq("user_id", userId)
           .single();
 
-        const updateData: Record<string, unknown> = { subscription_status: "past_due" };
-        if (!existingPlan?.past_due_since || existingPlan.subscription_status !== "past_due") {
-          updateData.past_due_since = new Date().toISOString();
+        // Only an account that actually had a working paid subscription gets expired.
+        // A declined card on a FIRST checkout must leave the row untouched: there is no
+        // access to revoke and nothing was charged, so the user should just see the
+        // pricing modal again. Critically, this also protects a TRIALING user whose
+        // upgrade attempt is declined — expiring them would destroy a trial they're
+        // still entitled to.
+        const prevStatus = existingPlan?.subscription_status;
+        if (prevStatus !== "active") {
+          logger.info(
+            { userId, prevStatus },
+            "Payment failed with no active subscription — leaving plan state unchanged"
+          );
+          break;
         }
 
         await supabaseAdmin
           .from("user_plans")
-          .update(updateData)
+          .update({ subscription_status: "expired", past_due_since: null })
           .eq("user_id", userId);
-        logger.info({ userId }, "Payment failed / on hold — marked past_due");
+        logger.info({ userId }, "Payment failed / on hold — access revoked (expired)");
         break;
       }
 

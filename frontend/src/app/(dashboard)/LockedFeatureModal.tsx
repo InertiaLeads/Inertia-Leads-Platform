@@ -11,7 +11,9 @@ export default function LockedFeatureModal() {
   const isCancelledExpired = subscriptionStatus === "cancelled" && (!currentPeriodEnd || new Date(currentPeriodEnd) <= new Date());
   const isExpired = subscriptionStatus === "expired";
   const isPaused = subscriptionStatus === "paused";
-  const isPastDueExpired = subscriptionStatus === "past_due" && pastDueSince && (Date.now() - new Date(pastDueSince).getTime()) >= 3 * 24 * 60 * 60 * 1000;
+  // A failed payment locks the account immediately — there is no grace window to be
+  // "within", so past_due always means locked.
+  const isPastDueExpired = subscriptionStatus === "past_due";
 
   let title = "Feature Locked";
   let description = (

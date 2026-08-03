@@ -216,7 +216,6 @@ export default function SettingsPage() {
   const [isExpired, setIsExpired] = useState(false);
   const [isTrialExpired, setIsTrialExpired] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
-  const [isPastDue, setIsPastDue] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [periodEndDate, setPeriodEndDate] = useState<string | null>(null);
   const [periodStartDate, setPeriodStartDate] = useState<string | null>(null);
@@ -346,7 +345,6 @@ export default function SettingsPage() {
     }
 
     let cancelled = false;
-    const PAID_STATUSES = ["active", "past_due"];
 
     (async () => {
       // ~10s of grace for the webhook: 6 attempts, 2s apart (first check is immediate).
@@ -355,8 +353,14 @@ export default function SettingsPage() {
         try {
           const data = await apiGet<{ subscriptionStatus?: string }>("/stats");
           if (cancelled) return;
-          if (data.subscriptionStatus && PAID_STATUSES.includes(data.subscriptionStatus)) {
+          // Only "active" counts as success. A declined card leaves the account without
+          // access (expired, or unchanged if it never had a subscription), never active.
+          if (data.subscriptionStatus === "active") {
             setShowPaymentSuccess(true);
+            return;
+          }
+          if (data.subscriptionStatus === "expired" || data.subscriptionStatus === "past_due") {
+            toast.addToast("Your payment did not go through. Please try again with a different payment method.", "error");
             return;
           }
         } catch {
@@ -427,15 +431,6 @@ export default function SettingsPage() {
         setIsExpired(false);
         setIsTrialExpired(false);
         setIsCancelling(true);
-        setIsPastDue(false);
-        setIsPaused(false);
-      } else if (data.subscriptionStatus === "past_due") {
-        // Payment failed — show warning, still has access during grace period
-        setHasPlan(true);
-        setIsExpired(false);
-        setIsTrialExpired(false);
-        setIsCancelling(false);
-        setIsPastDue(true);
         setIsPaused(false);
       } else if (data.subscriptionStatus === "paused") {
         // Subscription paused — no access
@@ -443,7 +438,6 @@ export default function SettingsPage() {
         setIsExpired(false);
         setIsTrialExpired(false);
         setIsCancelling(false);
-        setIsPastDue(false);
         setIsPaused(true);
       } else if (data.subscriptionStatus === "trialing" && !data.isOnTrial) {
         // Free trial ended without payment — status stays "trialing" but the trial date has passed.
@@ -452,15 +446,19 @@ export default function SettingsPage() {
         setIsExpired(true);
         setIsTrialExpired(true);
         setIsCancelling(false);
-        setIsPastDue(false);
         setIsPaused(false);
-      } else if (data.subscriptionStatus === "expired" || data.subscriptionStatus === "cancelled") {
-        // Fully expired or cancelled (period over)
+      } else if (
+        data.subscriptionStatus === "expired" ||
+        data.subscriptionStatus === "cancelled" ||
+        // A failed payment grants no access and no grace period, so it renders exactly
+        // like an expired plan: "your plan is not active", re-subscribe from the modal.
+        data.subscriptionStatus === "past_due"
+      ) {
+        // Fully expired, cancelled (period over), or payment failed
         setHasPlan(false);
         setIsExpired(true);
         setIsTrialExpired(false);
         setIsCancelling(false);
-        setIsPastDue(false);
         setIsPaused(false);
       } else if (data.subscriptionStatus === "none") {
         // No subscription yet (new user whose trial wasn't provisioned) — show "Get started" card
@@ -468,7 +466,6 @@ export default function SettingsPage() {
         setIsExpired(false);
         setIsTrialExpired(false);
         setIsCancelling(false);
-        setIsPastDue(false);
         setIsPaused(false);
       } else {
         // "trialing" (active) and "active" — show active plan / trial card
@@ -476,7 +473,6 @@ export default function SettingsPage() {
         setIsExpired(false);
         setIsTrialExpired(false);
         setIsCancelling(false);
-        setIsPastDue(false);
         setIsPaused(false);
       }
     }).catch(() => {
@@ -1395,11 +1391,6 @@ export default function SettingsPage() {
                         <div className="w-2 h-2 rounded-full bg-orange-500" />
                         <span className="text-xs font-semibold text-orange-700">Cancelling</span>
                       </div>
-                    ) : isPastDue ? (
-                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 border border-red-200">
-                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                        <span className="text-xs font-semibold text-red-700">Past Due</span>
-                      </div>
                     ) : isOnTrial ? (
                       <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200">
                         <div className="w-2 h-2 rounded-full bg-amber-500" />
@@ -1423,21 +1414,6 @@ export default function SettingsPage() {
                         <div>
                           <p className="text-[11px] font-bold text-gray-800">Your plan ends on {new Date(periodEndDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
                           <p className="text-[10px] text-gray-500 mt-0.5">You still have full access until then. Reactivate to keep your plan.</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Past due warning banner */}
-                  {isPastDue && (
-                    <div className="rounded-lg p-3 mb-3 border border-red-200" style={{ background: "linear-gradient(135deg, rgba(239,68,68,0.04) 0%, rgba(185,28,28,0.06) 100%)" }}>
-                      <div className="flex items-start gap-2">
-                        <svg className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                        </svg>
-                        <div>
-                          <p className="text-[11px] font-bold text-gray-800">Payment failed</p>
-                          <p className="text-[10px] text-gray-500 mt-0.5">Please update your payment method within 3 days to avoid losing access.</p>
                         </div>
                       </div>
                     </div>
@@ -1558,7 +1534,7 @@ export default function SettingsPage() {
 
         {/* Pricing Modal */}
         {showPricingModal && (
-          <PricingModal plan={plan} hasPlan={hasPlan} isExpired={isExpired} isPastDue={isPastDue} isOnTrial={isOnTrial} onClose={() => setShowPricingModal(false)} onToast={toast.addToast} />
+          <PricingModal plan={plan} hasPlan={hasPlan} isExpired={isExpired} isOnTrial={isOnTrial} onClose={() => setShowPricingModal(false)} onToast={toast.addToast} />
         )}
 
         {/* In-app payment success card (shown on return from Dodo checkout) */}

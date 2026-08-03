@@ -75,12 +75,11 @@ export function PlanProvider({ children }: { children: ReactNode }) {
         const trialExpired = status === "trialing" && data.trialEndsAt && new Date(data.trialEndsAt) < new Date();
         // Cancelled users keep access until current_period_end
         const cancelledWithAccess = status === "cancelled" && data.currentPeriodEnd && new Date(data.currentPeriodEnd) > new Date();
-        // Past due: 3-day grace period from when payment first failed
-        const pastDueWithAccess = status === "past_due" && (
-          !data.pastDueSince || (Date.now() - new Date(data.pastDueSince).getTime()) < 3 * 24 * 60 * 60 * 1000
-        );
-        // User can access features if: trialing (not expired), active, past_due (within grace), or cancelled with remaining period
-        const canAccess = (["trialing", "active"].includes(status) && !trialExpired) || !!cancelledWithAccess || !!pastDueWithAccess;
+        // A failed payment (past_due) grants NO access — no grace period. Mirrors
+        // hasActiveSubscription() in backend/src/services/planLimits.ts, which is the
+        // real gate; this only decides what the UI unlocks.
+        // User can access features if: trialing (not expired), active, or cancelled with remaining period
+        const canAccess = (["trialing", "active"].includes(status) && !trialExpired) || !!cancelledWithAccess;
         
         setPlanData({
           planLabel: data.planLabel,

@@ -7,13 +7,12 @@ interface PricingModalProps {
   plan: string;
   hasPlan: boolean;
   isExpired: boolean;
-  isPastDue?: boolean;
   isOnTrial?: boolean;
   onClose: () => void;
   onToast: (message: string, type: "success" | "error" | "info") => void;
 }
 
-export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOnTrial, onClose, onToast }: PricingModalProps) {
+export default function PricingModal({ plan, hasPlan, isExpired, isOnTrial, onClose, onToast }: PricingModalProps) {
   // During the free trial the user has NO paid subscription yet (their `plan` is just the trial's
   // Growth tier). So every plan must be purchasable — treat trial like "no plan": show "Get Started"
   // on all cards, no "Current Plan", no upgrade/downgrade confirmation (buying = a fresh checkout).
@@ -94,21 +93,6 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
     }
   }
 
-  async function handleManageSubscription() {
-    setLoading("manage");
-    try {
-      const res = await apiPost<{ portalUrl?: string }>("/billing/manage", {});
-      if (res.portalUrl) {
-        window.open(res.portalUrl, "_blank");
-      } else {
-        onToast("Could not open subscription portal", "error");
-      }
-    } catch (err: any) {
-      onToast(err?.message || "Failed to open portal", "error");
-    } finally {
-      setLoading(null);
-    }
-  }
   // Checkout view: Dodo's full 2-column hosted checkout embedded inside this modal.
   if (checkoutUrl) {
     return (
@@ -155,17 +139,6 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
         <button onClick={onClose} className="absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
-        {isPastDue && (
-          <button
-            onClick={handleManageSubscription}
-            disabled={loading === "manage"}
-            className="absolute top-9 left-10 inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg text-white transition-all shadow-sm hover:opacity-90"
-            style={{ background: "linear-gradient(135deg, #3d3580 0%, #6962c4 100%)" }}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
-            {loading === "manage" ? "Opening..." : "Update Payment Method"}
-          </button>
-        )}
         <div className="text-center mb-7">
           <h2 className="text-2xl font-extrabold text-gray-900">Choose Your Plan</h2>
           <p className="text-sm text-gray-500 mt-1.5">Scale your outreach with the right plan</p>
