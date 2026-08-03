@@ -27,15 +27,29 @@ export default function PricingModal({ plan, hasPlan, isExpired, isPastDue, isOn
   const PLAN_PRICES: Record<string, number> = { starter: 39, growth: 79, agency: 129 };
 
   // Detect the post-payment redirect. Dodo navigates the iframe to our return_url
-  // (/settings?payment=success) — that's same-origin, so once it lands there we can read
-  // the URL and finish in the top window. While it's on Dodo's domain the read throws
-  // (cross-origin) and is ignored.
+  // (/billing/return) — that's same-origin, so we can read the URL once it lands.
+  // While it's still on Dodo's domain the read throws (cross-origin) and is ignored.
+  //
+  // /billing/return normally breaks out to the top window itself; this is only a fallback
+  // for the case where its script hasn't run. Matching on the PATH (not a full query
+  // string) matters: the previous version looked for "/settings?payment=success" and
+  // silently missed anything else, which is how a failed payment could leave the modal
+  // sitting open over an embedded page.
   function handleIframeLoad(e: React.SyntheticEvent<HTMLIFrameElement>) {
     setIframeLoaded(true);
     try {
       const iframeUrl = e.currentTarget.contentWindow?.location.href;
-      if (iframeUrl && iframeUrl.includes("/settings?payment=success")) {
-        window.location.href = "/settings?payment=success";
+      if (!iframeUrl) return;
+      const { pathname, search } = new URL(iframeUrl);
+      if (pathname.startsWith("/billing/return")) {
+        // The return page's own script would have added payment=return; since it evidently
+        // didn't run, set it here so /settings knows to verify the outcome.
+        const forwarded = new URLSearchParams(search);
+        forwarded.set("payment", "return");
+        window.location.href = `/settings?${forwarded.toString()}`;
+      } else if (pathname === "/settings") {
+        // Legacy return_url shape, still honoured.
+        window.location.href = `/settings${search}`;
       }
     } catch {
       // Cross-origin (still on Dodo's checkout) — nothing to do.

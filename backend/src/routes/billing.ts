@@ -70,7 +70,12 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
         customer: { email: userEmail },
         metadata: { user_id: userId },
         subscription_data: { trial_period_days: 0 },
-        return_url: `${frontendUrl}/settings?payment=success`,
+        // Dodo uses this URL for BOTH success and failure, and the checkout runs inside an
+        // iframe — so it must point at a PUBLIC page. A page under (dashboard) would fail
+        // its server-side auth check (SameSite=Lax cookies aren't sent on cross-site frame
+        // navigations) and render /login inside the checkout modal. /billing/return is
+        // public and breaks out to the top window, which then loads /settings signed-in.
+        return_url: `${frontendUrl}/billing/return`,
         // Charge in USD by default (regardless of the customer's location).
         billing_currency: "USD",
         // Force light mode + English, and hide the discount-code field.

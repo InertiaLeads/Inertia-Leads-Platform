@@ -324,16 +324,60 @@ export default function SettingsPage() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Returning from Dodo checkout (?payment=success): show an in-app success card so the
-  // user gets confirmation inside the app instead of on Dodo's page. Strip the query
-  // params afterwards so a refresh doesn't re-trigger it.
+  // Returning from Dodo checkout. Two entry points:
+  //   ?payment=success — legacy/explicit success, trusted as-is.
+  //   ?payment=return  — sent by /billing/return, the public page Dodo redirects to. Dodo
+  //                      uses one return_url for BOTH success and failure, so we must NOT
+  //                      assume success: verify against real subscription state instead.
+  // The subscription only becomes active once Dodo's webhook lands, which can trail the
+  // redirect by a moment, so poll /stats briefly before deciding.
+  // Query params are stripped immediately so a refresh can't re-trigger any of this.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("payment") === "success") {
+    const payment = params.get("payment");
+    if (payment !== "success" && payment !== "return") return;
+
+    window.history.replaceState({}, "", window.location.pathname);
+
+    if (payment === "success") {
       setShowPaymentSuccess(true);
-      window.history.replaceState({}, "", window.location.pathname);
+      return;
     }
+
+    let cancelled = false;
+    const PAID_STATUSES = ["active", "past_due"];
+
+    (async () => {
+      // ~10s of grace for the webhook: 6 attempts, 2s apart (first check is immediate).
+      for (let attempt = 0; attempt < 6 && !cancelled; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const data = await apiGet<{ subscriptionStatus?: string }>("/stats");
+          if (cancelled) return;
+          if (data.subscriptionStatus && PAID_STATUSES.includes(data.subscriptionStatus)) {
+            setShowPaymentSuccess(true);
+            return;
+          }
+        } catch {
+          // Transient error — keep polling; the loop bound is the timeout.
+        }
+      }
+      if (cancelled) return;
+      // Never went active within the window. That covers BOTH a failed/abandoned payment
+      // and a merely slow webhook, and we can't tell them apart from here — so the message
+      // must not claim either outcome. Asserting "you have not been charged" would be
+      // flatly wrong for someone whose payment succeeded but whose webhook lagged.
+      toast.addToast(
+        "We couldn't confirm your payment yet. If you completed it, your plan will activate shortly — refresh this page in a moment.",
+        "info"
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
