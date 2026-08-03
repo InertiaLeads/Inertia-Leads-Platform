@@ -10,7 +10,6 @@ export default function LockedFeatureModal() {
   const isTrialExpired = subscriptionStatus === "trialing" && trialEndsAt && new Date(trialEndsAt) < new Date();
   const isCancelledExpired = subscriptionStatus === "cancelled" && (!currentPeriodEnd || new Date(currentPeriodEnd) <= new Date());
   const isExpired = subscriptionStatus === "expired";
-  const isPaused = subscriptionStatus === "paused";
   // A failed payment locks the account immediately — there is no grace window to be
   // "within", so past_due always means locked.
   const isPastDueExpired = subscriptionStatus === "past_due";
@@ -30,25 +29,19 @@ export default function LockedFeatureModal() {
     ctaText = "Choose a Plan";
     footerText = "Pick up right where you left off";
   } else if (isPastDueExpired) {
+    // There is no in-app payment-method update — a failed payment means re-subscribing.
     title = "Payment Failed";
     description = (
-      <>Your payment could not be processed. Please <span className="text-[#a5a0e6] font-semibold">update your payment method</span> to restore access to all features.</>
+      <>Your payment could not be processed. Please <span className="text-[#a5a0e6] font-semibold">choose a plan</span> to restore access to all features.</>
     );
-    ctaText = "Update Payment";
-    footerText = "Your data is safe — update payment to continue";
+    ctaText = "Choose a Plan";
+    footerText = "Your data is safe and waiting for you";
   } else if (isCancelledExpired || isExpired) {
     title = "Subscription Expired";
     description = (
       <>Your subscription has expired. To regain access to all features, please <span className="text-[#a5a0e6] font-semibold">reactivate your plan</span>.</>
     );
     ctaText = "Reactivate Plan";
-    footerText = "Your data is safe and waiting for you";
-  } else if (isPaused) {
-    title = "Subscription Paused";
-    description = (
-      <>Your subscription is currently paused. Resume it to <span className="text-[#a5a0e6] font-semibold">unlock all features</span> again.</>
-    );
-    ctaText = "Resume Plan";
     footerText = "Your data is safe and waiting for you";
   }
   return (

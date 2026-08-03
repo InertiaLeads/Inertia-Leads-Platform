@@ -7,7 +7,8 @@ import supabase from "./supabase";
 // Warmup tracks per Gmail inbox (gmail_connected_at), NOT per billing cycle.
 
 export type PlanTier = "starter" | "growth" | "agency";
-export type SubscriptionStatus = "none" | "trialing" | "active" | "cancelled" | "past_due" | "paused" | "expired";
+// No "paused": the product offers no pause option and mapDodoStatus never produces one.
+export type SubscriptionStatus = "none" | "trialing" | "active" | "cancelled" | "past_due" | "expired";
 
 interface PlanConfig {
   // Warmup schedule: daily send limits per week
@@ -184,7 +185,6 @@ export function hasActiveSubscription(
       // Access continues until end of paid period
       return !!currentPeriodEnd && new Date(currentPeriodEnd) > new Date();
 
-    case "paused":
     case "expired":
     case "none":
     default:
@@ -213,7 +213,6 @@ export async function checkSubscriptionAccess(userId: string): Promise<{
       case "trialing": reason = "Your trial has expired. Please subscribe to continue."; break;
       case "expired": reason = "Your subscription has expired. Please renew."; break;
       case "cancelled": reason = "Your subscription period has ended. Please renew."; break;
-      case "paused": reason = "Your subscription is paused. Please resume to continue."; break;
       // No in-app payment-method update any more — a failed payment just means re-subscribe.
       case "past_due": reason = "Your payment failed. Please choose a plan to continue."; break;
       default: reason = "Subscription inactive.";

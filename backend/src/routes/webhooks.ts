@@ -1,10 +1,48 @@
 import { Router, Request, Response } from "express";
 import { Webhook } from "standardwebhooks";
 import supabaseAdmin from "../services/supabase";
-import { getPlanFromProduct, mapDodoStatus } from "../services/dodo";
+import { getPlanFromProduct, mapDodoStatus, getDodoClient, describeDodoError } from "../services/dodo";
 import logger from "../utils/logger";
 
 const router = Router();
+
+// Kill a subscription at Dodo immediately (not at period end).
+//
+// Note this is deliberately different from the user-initiated cancel in routes/billing.ts,
+// which sets `cancel_at_next_billing_date: true` so the customer keeps what they paid for.
+// Here the subscription is dead — its payment failed, or it was abandoned when the customer
+// re-subscribed — so it must stop billing right now.
+//
+// Never throws: a webhook must still acknowledge (200) and revoke access even if this call
+// fails, otherwise Dodo retries forever and the user stays wrongly active. Returns whether
+// the cancellation succeeded so the caller can log it.
+async function cancelSubscriptionNow(subscriptionId: string, reason: string): Promise<boolean> {
+  if (!subscriptionId) return false;
+  try {
+    await getDodoClient().subscriptions.update(subscriptionId, {
+      status: "cancelled",
+      cancel_reason: "cancelled_by_merchant",
+    });
+    logger.info({ subscriptionId, reason }, "Stale subscription cancelled at Dodo");
+    return true;
+  } catch (err: any) {
+    // Already cancelled/expired subscriptions return a 4xx — that's the desired end state,
+    // so treat it as success rather than noise.
+    const statusCode = err?.status ?? err?.statusCode;
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      logger.info(
+        { subscriptionId, reason, statusCode },
+        "Dodo rejected cancellation (already inactive) — treating as done"
+      );
+      return true;
+    }
+    logger.error(
+      { subscriptionId, reason, dodo: describeDodoError(err) },
+      "FAILED to cancel stale subscription at Dodo — it may keep billing; cancel it manually"
+    );
+    return false;
+  }
+}
 
 // Verify a Dodo webhook. Dodo follows the Standard Webhooks spec: the signature is
 // an HMAC-SHA256 over `${webhook-id}.${webhook-timestamp}.${rawBody}`, carried in the
@@ -69,10 +107,80 @@ router.post("/", async (req: Request, res: Response) => {
 
     logger.info({ eventType, userId, status, subscriptionId }, "Dodo webhook received");
 
+    // ===== Stale-subscription guard =====
+    // Every event must apply to the subscription this account currently holds. Without
+    // this, an ABANDONED subscription keeps mutating a live account: a user whose card
+    // failed re-subscribes, then the old subscription emits its own `subscription.expired`
+    // (or `cancelled`) and silently kills the new, paid plan.
+    //
+    // `subscription.active` is exempt — it is the event that legitimately establishes a new
+    // subscription ID on the row, so it must be allowed to run before any ID exists.
+    //
+    // The two event classes need DIFFERENT rules, and conflating them breaks checkout:
+    //
+    //  - REVOKING events must match exactly, and are dropped when the row holds no id.
+    //    "No id" means there is no subscription to revoke. This is also what swallows the
+    //    `subscription.cancelled` echo of our own payment.failed cancellation — without it
+    //    that echo would set status 'cancelled' with a future current_period_end and hand
+    //    access straight back to someone whose card just failed.
+    //
+    //  - GRANTING events are dropped only when the row holds a DIFFERENT id. They must be
+    //    allowed through when the row's id is still null, because `payment.succeeded` can
+    //    arrive BEFORE `subscription.active`. Requiring a match there would drop the
+    //    payment confirmation of a brand-new subscription, leaving a customer who was
+    //    charged sitting on "no active plan".
+    const REVOKING_EVENTS = [
+      "payment.failed",
+      "subscription.on_hold",
+      "subscription.cancelled",
+      "subscription.expired",
+    ];
+
+    if (eventType !== "subscription.active" && subscriptionId) {
+      const { data: currentRow } = await supabaseAdmin
+        .from("user_plans")
+        .select("dodo_subscription_id")
+        .eq("user_id", userId)
+        .single();
+
+      const activeId = currentRow?.dodo_subscription_id || null;
+      const isRevoking = REVOKING_EVENTS.includes(eventType);
+      const stale = isRevoking ? activeId !== subscriptionId : !!activeId && activeId !== subscriptionId;
+
+      if (stale) {
+        logger.info(
+          { eventType, userId, eventSubscriptionId: subscriptionId, activeSubscriptionId: activeId, isRevoking },
+          "Ignoring webhook for a subscription this account no longer holds"
+        );
+        return res.status(200).json({ received: true });
+      }
+    }
+
     switch (eventType) {
       case "subscription.active": {
         // First activation of a paid subscription. The app owns the trial, so a paid
         // sub always clears trial_ends_at and lands on 'active'.
+
+        // Safety net: this is the one place a subscription ID gets overwritten, so it's the
+        // last chance to notice an older one. If the row still holds a DIFFERENT id, that
+        // subscription is about to become unreachable — we'd lose the only reference to it
+        // and it could keep billing. Kill it first. Normally payment.failed already did,
+        // so this only fires if that event was missed, delayed, or arrived out of order.
+        const { data: priorRow } = await supabaseAdmin
+          .from("user_plans")
+          .select("dodo_subscription_id")
+          .eq("user_id", userId)
+          .single();
+
+        const priorSubscriptionId = priorRow?.dodo_subscription_id || null;
+        if (priorSubscriptionId && priorSubscriptionId !== subscriptionId) {
+          logger.warn(
+            { userId, priorSubscriptionId, newSubscriptionId: subscriptionId },
+            "Account is being replaced onto a new subscription — cancelling the previous one"
+          );
+          await cancelSubscriptionNow(priorSubscriptionId, "superseded by a new subscription");
+        }
+
         const plan = getPlanFromProduct(productId);
         await supabaseAdmin
           .from("user_plans")
@@ -124,7 +232,7 @@ router.post("/", async (req: Request, res: Response) => {
         // confusing than useful for this audience.)
         const { data: existingPlan } = await supabaseAdmin
           .from("user_plans")
-          .select("subscription_status")
+          .select("subscription_status, dodo_subscription_id")
           .eq("user_id", userId)
           .single();
 
@@ -143,11 +251,34 @@ router.post("/", async (req: Request, res: Response) => {
           break;
         }
 
+        // Kill the subscription at Dodo before revoking locally. Without this it stays
+        // billable: Dodo would keep retrying the card and could succeed, charging someone
+        // who no longer has access. Since we grant no grace period, the subscription has
+        // no remaining purpose.
+        // `payment.*` events don't reliably carry subscription_id, so fall back to the id on
+        // the row. Without this fallback a payload lacking the id would revoke access while
+        // leaving the subscription billable — the exact failure this is meant to prevent.
+        // The guard above already verified they match whenever the event does carry one.
+        const deadSubscriptionId = subscriptionId || existingPlan?.dodo_subscription_id || "";
+        await cancelSubscriptionNow(deadSubscriptionId, "payment failed");
+
+        // Clear the subscription ID along with the status. Two reasons: it's dead, and
+        // nulling it makes the stale-subscription guard above drop the `subscription.cancelled`
+        // event our own cancellation just triggered — which would otherwise set status to
+        // 'cancelled' and hand access straight back until current_period_end.
         await supabaseAdmin
           .from("user_plans")
-          .update({ subscription_status: "expired", past_due_since: null })
+          .update({
+            subscription_status: "expired",
+            past_due_since: null,
+            dodo_subscription_id: null,
+            current_period_end: null,
+          })
           .eq("user_id", userId);
-        logger.info({ userId }, "Payment failed / on hold — access revoked (expired)");
+        logger.info(
+          { userId, subscriptionId: deadSubscriptionId },
+          "Payment failed — subscription cancelled and access revoked"
+        );
         break;
       }
 
