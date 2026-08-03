@@ -24,7 +24,7 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
     // Check if user already has an active subscription
     const { data: userPlan } = await supabaseAdmin
       .from("user_plans")
-      .select("dodo_subscription_id, trial_ends_at, subscription_status")
+      .select("dodo_subscription_id, trial_ends_at, subscription_status, plan")
       .eq("user_id", userId)
       .single();
 
@@ -38,6 +38,23 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
     // prorated_immediately = charge/credit the difference now, matching the previous
     // provider's invoiceImmediately behavior for upgrades/downgrades.
     if (hasActiveSubscription) {
+      const previousPlan = userPlan.plan as string | null;
+
+      // Mark the change as in-flight BEFORE calling Dodo. prorated_immediately raises a
+      // separate proration invoice, and if that invoice is declined Dodo sends
+      // payment.failed — which is byte-for-byte indistinguishable from a failed RENEWAL.
+      // Without this marker the webhook treats it as a renewal failure and cancels the
+      // subscription, destroying a plan the customer already paid for just because their
+      // upgrade/downgrade top-up bounced. Applies to BOTH directions: a downgrade can also
+      // raise a chargeable proration.
+      await supabaseAdmin
+        .from("user_plans")
+        .update({
+          pending_plan_change_from: previousPlan,
+          pending_plan_change_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+
       try {
         await dodo.subscriptions.changePlan(userPlan.dodo_subscription_id, {
           product_id: productId,
@@ -45,6 +62,13 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
           quantity: 1,
         });
       } catch (changeErr: any) {
+        // Dodo rejected the call outright, so nothing changed on their side — clear the
+        // marker so a later unrelated payment.failed isn't misread as this change failing.
+        await supabaseAdmin
+          .from("user_plans")
+          .update({ pending_plan_change_from: null, pending_plan_change_at: null })
+          .eq("user_id", userId);
+
         logger.error(
           { dodo: describeDodoError(changeErr), userId, plan, productId },
           "Failed to swap subscription plan"
@@ -52,13 +76,15 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
         return res.status(500).json({ error: "Failed to change plan" });
       }
 
-      // Update local DB immediately (webhook will also confirm)
+      // Update local DB immediately (webhook will also confirm). This is optimistic: the
+      // proration invoice may still fail afterwards, in which case the payment.failed
+      // handler rolls `plan` back to pending_plan_change_from.
       await supabaseAdmin
         .from("user_plans")
         .update({ plan, subscription_status: "active", trial_ends_at: null })
         .eq("user_id", userId);
 
-      logger.info({ userId, plan }, "Subscription plan swapped");
+      logger.info({ userId, plan, previousPlan }, "Subscription plan swapped");
       return res.json({ success: true, message: `Plan changed to ${plan}` });
     }
 

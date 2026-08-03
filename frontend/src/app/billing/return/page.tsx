@@ -42,10 +42,13 @@ export default function BillingReturnPage() {
   }, []);
 
   return (
-    <div
-      className="min-h-screen flex flex-col items-center justify-center gap-6"
-      style={{ background: "linear-gradient(180deg, #f5f3ff 0%, #ede9fe 50%, #f5f3ff 100%)" }}
-    >
+    // Plain WHITE, deliberately — this page renders INSIDE the checkout modal's iframe.
+    // The modal container is white with horizontal padding, so a tinted background of our
+    // own appeared as a coloured panel inset within white gutters: a visible seam (which is
+    // what it looked like before). White matches the container so it reads as one surface.
+    // Note `transparent` is wrong here: the root layout paints <body> dark navy, which would
+    // show a dark block inside the white modal.
+    <div className="min-h-screen w-full flex flex-col items-center justify-center gap-6 bg-white">
       <div className="flex items-end gap-[7px] h-20">
         {[0, 1, 2, 3, 4, 5, 6].map((i) => (
           <div

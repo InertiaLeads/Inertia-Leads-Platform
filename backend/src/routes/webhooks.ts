@@ -215,10 +215,16 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       case "payment.succeeded": {
-        // Payment went through — mark active, clear past_due.
+        // Payment went through — mark active, clear past_due. Also clears any in-flight
+        // plan-change marker: the proration was paid, so there is nothing to roll back.
         await supabaseAdmin
           .from("user_plans")
-          .update({ subscription_status: "active", past_due_since: null })
+          .update({
+            subscription_status: "active",
+            past_due_since: null,
+            pending_plan_change_from: null,
+            pending_plan_change_at: null,
+          })
           .eq("user_id", userId);
         logger.info({ userId }, "Payment successful — subscription active");
         break;
@@ -232,9 +238,42 @@ router.post("/", async (req: Request, res: Response) => {
         // confusing than useful for this audience.)
         const { data: existingPlan } = await supabaseAdmin
           .from("user_plans")
-          .select("subscription_status, dodo_subscription_id")
+          .select("subscription_status, dodo_subscription_id, plan, pending_plan_change_from, pending_plan_change_at")
           .eq("user_id", userId)
           .single();
+
+        // ---- Failed PLAN CHANGE (upgrade or downgrade) ----
+        // A plan change raises its own proration invoice. If that invoice is declined the
+        // customer still holds a perfectly good, already-paid subscription — only the
+        // top-up failed. Cancelling here would destroy what they paid for. So roll the plan
+        // back to what it was and leave the subscription running.
+        //
+        // The 30-minute window keeps this narrow: a proration invoice resolves within
+        // seconds, so anything later is a genuine renewal failure and must still cancel.
+        const pendingFrom = existingPlan?.pending_plan_change_from as string | null;
+        const pendingAt = existingPlan?.pending_plan_change_at as string | null;
+        const changeIsRecent =
+          !!pendingAt && Date.now() - new Date(pendingAt).getTime() < 30 * 60 * 1000;
+
+        if (pendingFrom && changeIsRecent) {
+          await supabaseAdmin
+            .from("user_plans")
+            .update({
+              plan: pendingFrom,
+              subscription_status: "active",
+              past_due_since: null,
+              pending_plan_change_from: null,
+              pending_plan_change_at: null,
+            })
+            .eq("user_id", userId);
+
+          logger.warn(
+            { userId, revertedTo: pendingFrom, attemptedPlan: existingPlan?.plan, subscriptionId },
+            "Plan-change proration failed — reverted plan, subscription left active. " +
+              "Dodo may still hold the attempted plan; reconcile there if the two disagree."
+          );
+          break;
+        }
 
         // Only an account that actually had a working paid subscription gets expired.
         // A declined card on a FIRST checkout must leave the row untouched: there is no
@@ -283,11 +322,17 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       case "subscription.plan_changed": {
-        // Upgrade/downgrade — update plan + status, keep the existing billing window.
+        // Upgrade/downgrade confirmed by Dodo — update plan + status, keep the existing
+        // billing window, and clear the in-flight marker since the change stuck.
         const plan = getPlanFromProduct(productId);
         await supabaseAdmin
           .from("user_plans")
-          .update({ plan, subscription_status: mapDodoStatus(status) })
+          .update({
+            plan,
+            subscription_status: mapDodoStatus(status),
+            pending_plan_change_from: null,
+            pending_plan_change_at: null,
+          })
           .eq("user_id", userId);
         logger.info({ userId, plan }, "Subscription plan changed");
         break;

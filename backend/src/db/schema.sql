@@ -162,6 +162,12 @@ create table if not exists user_plans (
   lemon_squeezy_customer_id text,      -- legacy (pre-Dodo); kept for historical rows
   dodo_subscription_id text,           -- Dodo Payments subscription id
   dodo_customer_id text,               -- Dodo Payments customer id (for portal sessions)
+  -- In-flight plan change (upgrade OR downgrade). Set just before calling Dodo's
+  -- changePlan; lets the payment.failed webhook tell a failed PLAN-CHANGE proration
+  -- apart from a failed RENEWAL. A failed renewal cancels the subscription; a failed
+  -- plan change must only roll the plan back and leave the subscription alone.
+  pending_plan_change_from text,       -- plan the user was on before the attempted change
+  pending_plan_change_at timestamp with time zone, -- when the change was attempted
   current_period_end timestamp with time zone,
   current_period_start timestamp with time zone,
   gmail_connected_at timestamp with time zone,
@@ -623,3 +629,19 @@ alter table job_locks enable row level security;
 -- =============================================
 alter table user_plans add column if not exists dodo_subscription_id text;
 alter table user_plans add column if not exists dodo_customer_id text;
+
+-- =============================================
+-- MIGRATION (2026-08): plan-change rollback on failed proration
+-- Idempotent — safe to run on an existing database.
+--
+-- Upgrading/downgrading calls Dodo's changePlan with prorated_immediately, which raises a
+-- separate proration invoice. If THAT invoice is declined, Dodo emits payment.failed —
+-- indistinguishable from a failed renewal. The webhook previously treated both as fatal and
+-- cancelled the subscription, destroying a plan the customer had already paid for just
+-- because their upgrade charge bounced.
+--
+-- These two columns mark a plan change as in-flight so the webhook can instead roll the plan
+-- back and keep the subscription running. See routes/billing.ts + routes/webhooks.ts.
+-- =============================================
+alter table user_plans add column if not exists pending_plan_change_from text;
+alter table user_plans add column if not exists pending_plan_change_at timestamp with time zone;
