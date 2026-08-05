@@ -28,20 +28,19 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
       .eq("user_id", userId)
       .single();
 
-    // A subscription scheduled for cancellation is still LIVE at Dodo until its period ends,
-    // and the customer has already paid for that time. Route them through changePlan so the
-    // switch is prorated against what they paid — a fresh checkout would charge full price
-    // and forfeit their remaining days.
-    const periodStillRunning =
-      !!userPlan?.current_period_end && new Date(userPlan.current_period_end) > new Date();
-
-    // past_due is deliberately NOT here. A failed payment now revokes access outright, so
-    // such a user must go through a FRESH checkout rather than changePlan — swapping the
-    // plan on a subscription whose payment just bounced would fail at Dodo anyway.
+    // Only a running, non-cancelling subscription can be swapped in place.
+    //
+    // 'cancelled' is excluded because Dodo REFUSES it outright — a subscription with
+    // cancel_at_next_billing_date set returns:
+    //   409 PLAN_CHANGE_NOT_ALLOWED_FOR_SCHEDULED_CANCELLATION
+    // (verified against their change-plan/preview endpoint). The UI therefore shows only
+    // "Reactivate Plan" while cancelling; once reactivated the normal upgrade path applies.
+    //
+    // 'past_due' is excluded too: a failed payment now revokes access outright, so such a
+    // user goes through a FRESH checkout rather than a swap that would fail at Dodo anyway.
     const currentStatus = userPlan?.subscription_status || "";
     const hasActiveSubscription = userPlan?.dodo_subscription_id &&
-      (["active", "trialing"].includes(currentStatus) ||
-        (currentStatus === "cancelled" && periodStillRunning));
+      ["active", "trialing"].includes(currentStatus);
 
     // If user has an active subscription, swap the plan in place (no new checkout needed).
     // prorated_immediately = charge/credit the difference now, matching the previous

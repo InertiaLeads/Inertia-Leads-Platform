@@ -1412,14 +1412,21 @@ export default function SettingsPage() {
                 </div>
 
                 {isCancelling ? (
-                  <div className="flex gap-2 mt-4">
+                  /* Reactivate only — no "Change Plan" here.
+                     Dodo REFUSES a plan change on a subscription scheduled for cancellation:
+                       409 PLAN_CHANGE_NOT_ALLOWED_FOR_SCHEDULED_CANCELLATION
+                     (verified against their change-plan/preview endpoint). So the button could
+                     never work — it either 500'd or would have to silently un-cancel the user.
+                     Reactivating first is one extra click and then the normal Upgrade /
+                     Manage Subscription button appears, which handles plan changes properly. */
+                  <div className="mt-4">
                     <button
                       onClick={async () => {
                         setReactivating(true);
                         try {
                           await apiPost("/billing/reactivate", {});
                           setIsCancelling(false);
-                          toast.addToast("Plan reactivated! Your subscription will continue.", "success");
+                          toast.addToast("Plan reactivated! You can now change your plan.", "success");
                         } catch {
                           toast.addToast("Failed to reactivate. Please try again.", "error");
                         } finally {
@@ -1427,17 +1434,14 @@ export default function SettingsPage() {
                         }
                       }}
                       disabled={reactivating}
-                      className="flex-1 py-2.5 text-xs font-semibold rounded-lg text-white transition-all hover:opacity-90 hover:shadow-md disabled:opacity-50"
+                      className="w-full py-2.5 text-xs font-semibold rounded-lg text-white transition-all hover:opacity-90 hover:shadow-md disabled:opacity-50"
                       style={{ background: "linear-gradient(135deg, #059669 0%, #10b981 100%)" }}
                     >
                       {reactivating ? "Reactivating..." : "Reactivate Plan"}
                     </button>
-                    <button
-                      onClick={() => setShowPricingModal(true)}
-                      className="flex-1 py-2.5 text-xs font-semibold rounded-lg text-gray-600 border border-gray-200 hover:bg-gray-50 transition-all"
-                    >
-                      Change Plan
-                    </button>
+                    <p className="text-[10px] text-gray-400 text-center mt-2">
+                      Reactivate to change your plan or keep your subscription running.
+                    </p>
                   </div>
                 ) : isOnTrial ? (
                   /* Free trial — single upgrade CTA, always enabled. No "cancel" (there's no card/subscription yet). */
