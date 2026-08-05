@@ -24,15 +24,24 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
     // Check if user already has an active subscription
     const { data: userPlan } = await supabaseAdmin
       .from("user_plans")
-      .select("dodo_subscription_id, trial_ends_at, subscription_status, plan")
+      .select("dodo_subscription_id, trial_ends_at, subscription_status, plan, current_period_end")
       .eq("user_id", userId)
       .single();
+
+    // A subscription scheduled for cancellation is still LIVE at Dodo until its period ends,
+    // and the customer has already paid for that time. Route them through changePlan so the
+    // switch is prorated against what they paid — a fresh checkout would charge full price
+    // and forfeit their remaining days.
+    const periodStillRunning =
+      !!userPlan?.current_period_end && new Date(userPlan.current_period_end) > new Date();
 
     // past_due is deliberately NOT here. A failed payment now revokes access outright, so
     // such a user must go through a FRESH checkout rather than changePlan — swapping the
     // plan on a subscription whose payment just bounced would fail at Dodo anyway.
+    const currentStatus = userPlan?.subscription_status || "";
     const hasActiveSubscription = userPlan?.dodo_subscription_id &&
-      ["active", "trialing"].includes(userPlan?.subscription_status || "");
+      (["active", "trialing"].includes(currentStatus) ||
+        (currentStatus === "cancelled" && periodStillRunning));
 
     // If user has an active subscription, swap the plan in place (no new checkout needed).
     // prorated_immediately = charge/credit the difference now, matching the previous
@@ -79,12 +88,18 @@ router.post("/checkout", authMiddleware, async (req: Request, res: Response) => 
       // Update local DB immediately (webhook will also confirm). This is optimistic: the
       // proration invoice may still fail afterwards, in which case the payment.failed
       // handler rolls `plan` back to pending_plan_change_from.
+      //
+      // subscription_status is deliberately NOT written here. Changing plan doesn't change
+      // whether the subscription is running or scheduled to cancel, and forcing "active"
+      // would silently clear the Cancelling state for someone who had cancelled — the UI
+      // would show Active while Dodo still cancels at period end. Reactivate is the only
+      // thing that should clear it.
       await supabaseAdmin
         .from("user_plans")
-        .update({ plan, subscription_status: "active", trial_ends_at: null })
+        .update({ plan, trial_ends_at: null })
         .eq("user_id", userId);
 
-      logger.info({ userId, plan, previousPlan }, "Subscription plan swapped");
+      logger.info({ userId, plan, previousPlan, currentStatus }, "Subscription plan swapped");
       return res.json({ success: true, message: `Plan changed to ${plan}` });
     }
 

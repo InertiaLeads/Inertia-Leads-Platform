@@ -217,10 +217,22 @@ router.post("/", async (req: Request, res: Response) => {
       case "payment.succeeded": {
         // Payment went through — mark active, clear past_due. Also clears any in-flight
         // plan-change marker: the proration was paid, so there is nothing to roll back.
+        //
+        // Preserve a local 'cancelled': a customer who cancelled still has a running
+        // subscription and can change plan, so a successful proration payment must not
+        // silently un-cancel them. Only Reactivate clears that.
+        const { data: payStatusRow } = await supabaseAdmin
+          .from("user_plans")
+          .select("subscription_status")
+          .eq("user_id", userId)
+          .single();
+
         await supabaseAdmin
           .from("user_plans")
           .update({
-            subscription_status: "active",
+            ...(payStatusRow?.subscription_status === "cancelled"
+              ? {}
+              : { subscription_status: "active" }),
             past_due_since: null,
             pending_plan_change_from: null,
             pending_plan_change_at: null,
@@ -256,11 +268,13 @@ router.post("/", async (req: Request, res: Response) => {
           !!pendingAt && Date.now() - new Date(pendingAt).getTime() < 30 * 60 * 1000;
 
         if (pendingFrom && changeIsRecent) {
+          // Roll the plan back only. subscription_status is left alone on purpose: the
+          // subscription never stopped running, and forcing "active" here would wipe the
+          // Cancelling state of someone who had cancelled and then tried to switch plans.
           await supabaseAdmin
             .from("user_plans")
             .update({
               plan: pendingFrom,
-              subscription_status: "active",
               past_due_since: null,
               pending_plan_change_from: null,
               pending_plan_change_at: null,
@@ -325,11 +339,23 @@ router.post("/", async (req: Request, res: Response) => {
         // Upgrade/downgrade confirmed by Dodo — update plan + status, keep the existing
         // billing window, and clear the in-flight marker since the change stuck.
         const plan = getPlanFromProduct(productId);
+
+        // Dodo reports a cancel-at-period-end subscription as `active` (it IS still running,
+        // just scheduled to stop), so mapping its status blindly would clear our local
+        // 'cancelled' and show Active while Dodo still cancels on the end date. Preserve it.
+        const { data: statusRow } = await supabaseAdmin
+          .from("user_plans")
+          .select("subscription_status")
+          .eq("user_id", userId)
+          .single();
+        const nextStatus =
+          statusRow?.subscription_status === "cancelled" ? "cancelled" : mapDodoStatus(status);
+
         await supabaseAdmin
           .from("user_plans")
           .update({
             plan,
-            subscription_status: mapDodoStatus(status),
+            subscription_status: nextStatus,
             pending_plan_change_from: null,
             pending_plan_change_at: null,
           })

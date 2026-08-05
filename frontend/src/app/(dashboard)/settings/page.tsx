@@ -1395,7 +1395,10 @@ export default function SettingsPage() {
                     </div>
                     <div className="rounded-xl p-3 text-center border-2 border-[#e8e6f5]" style={{ background: "rgba(105,98,196,0.06)" }}>
                       <p className="text-lg font-bold" style={{ color: "#3d3580" }}>
-                        {plan === "starter" ? "1" : plan === "growth" ? "3" : "5"}
+                        {/* Read the real limit from the API. This was hardcoded 1/3/5 while
+                            getMaxInboxes() in the backend allows 1/2/4 — so Growth and Agency
+                            users were promised inboxes they'd then be blocked from adding. */}
+                        {maxInboxes}
                       </p>
                       <p className="text-[10px] text-gray-500 font-medium mt-0.5">Inboxes</p>
                     </div>
