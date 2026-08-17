@@ -2,65 +2,18 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-
-interface PageSpeedMetrics {
-  performanceScore: number;
-  accessibilityScore: number;
-  bestPracticesScore: number;
-  seoScore: number;
-  firstContentfulPaint: number;
-  largestContentfulPaint: number;
-  totalBlockingTime: number;
-  cumulativeLayoutShift: number;
-  speedIndex: number;
-}
-
-interface AuditData {
-  company: string;
-  website: string;
-  industry: string;
-  score: number;
-  benchmark?: {
-    avgHealth: number;
-    sampleCount: number;
-    scope: "industry" | "all";
-    label: string;
-  } | null;
-  serviceType: string;
-  language: string;
-  summary: string | null;
-  issues: string[];
-  opportunity: string | null;
-  signals: {
-    hasOnlineBooking: boolean | null;
-    hasContactForm: boolean | null;
-    hasSSL: boolean | null;
-    isMobileFriendly: boolean | null;
-    hasMetaDescription: boolean | null;
-    pageLoadTimeMs: number | null;
-    pageSizeKB: number | null;
-    copyrightYear: number | null;
-    socialLinks: number;
-    technologies: string[];
-    isParkedDomain: boolean;
-    _siteDown: boolean;
-    pageSpeed: {
-      mobile: PageSpeedMetrics | null;
-      desktop: PageSpeedMetrics | null;
-    } | null;
-    hasGoogleAds: boolean | null;
-    hasFacebookPixel: boolean | null;
-    hasAnalytics: boolean | null;
-    googleRating: number | null;
-    googleReviewCount: number | null;
-    hasLeadCaptureForm: boolean | null;
-    hasOpenGraph: boolean | null;
-    hasSchemaMarkup: boolean | null;
-    hasEmailMarketing: boolean | null;
-    hasCTA: boolean | null;
-    hasRetargeting: boolean | null;
-  };
-}
+import {
+  type AuditData,
+  type AuditSignals,
+  type Check,
+  type CheckStatus,
+  SEO_CATEGORIES,
+  MARKETING_CATEGORIES,
+  WEB_DEV_CATEGORIES,
+} from "./types";
+import { buildSeoChecks } from "./checks/seo";
+import { buildMarketingChecks } from "./checks/marketing";
+import { buildWebDevChecks } from "./checks/webDev";
 
 function ScoreRing({ score }: { score: number }) {
   const healthScore = Math.max(0, Math.min(100, 100 - score));
@@ -154,83 +107,327 @@ function LighthouseMetricRow({ label, value, unit, threshold }: { label: string;
 function truncateUrl(url: string, maxLen = 40): string {
   const clean = url.replace(/^https?:\/\//, "").replace(/\/$/, "");
   if (clean.length <= maxLen) return clean;
-  return clean.substring(0, maxLen) + "\u2026";
+  return clean.substring(0, maxLen) + "…";
 }
 
-// ===== LOADING SCREEN WITH PROGRESS BAR =====
-function AuditLoadingScreen() {
-  const [progress, setProgress] = useState(0);
-  const [step, setStep] = useState(0);
+// ===== Finding status styling =====
+// `warning` is visually distinct from `opportunity` on purpose: a deliberate
+// configuration (an intentional noindex, a restricted robots path) shouldn't be
+// presented in the same red as a genuine gap.
+const STATUS_STYLES: Record<CheckStatus, { label: string; text: string; bg: string; border: string; dot: string }> = {
+  good: { label: "Good", text: "#047857", bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)", dot: "#10b981" },
+  warning: { label: "Warning", text: "#b45309", bg: "rgba(245,158,11,0.12)", border: "rgba(245,158,11,0.3)", dot: "#f59e0b" },
+  opportunity: { label: "Opportunity", text: "#b91c1c", bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.25)", dot: "#ef4444" },
+};
 
-  const steps = [
-    "Connecting to website...",
-    "Analyzing page structure...",
-    "Running desktop performance test...",
-    "Running mobile performance test...",
-    "Checking security & accessibility...",
-    "Calculating scores...",
-    "Finalizing report...",
-  ];
+function StatusPill({ status }: { status: CheckStatus }) {
+  const s = STATUS_STYLES[status];
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex-shrink-0"
+      style={{ backgroundColor: s.bg, color: s.text, boxShadow: `inset 0 0 0 1px ${s.border}` }}
+    >
+      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: s.dot }} />
+      {s.label}
+    </span>
+  );
+}
 
-  useEffect(() => {
-    // Smooth progress: reaches ~90% in 40s, then slows down
-    const interval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 95) return prev;
-        if (prev < 70) return prev + 1.8;
-        if (prev < 85) return prev + 0.8;
-        return prev + 0.3;
-      });
-    }, 500);
+/**
+ * A single finding rendered in the doc's four-part format:
+ * name → Detected → Why it matters → Opportunity.
+ */
+function FindingRow({ check, index, showRank }: { check: Check; index: number; showRank: boolean }) {
+  const s = STATUS_STYLES[check.status];
+  return (
+    <div className={`py-4 ${index > 0 ? "border-t" : ""}`} style={index > 0 ? { borderColor: "rgba(0,0,0,0.06)" } : undefined}>
+      <div className="flex items-start gap-3">
+        <span className="text-base mt-0.5 flex-shrink-0">{check.icon}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-bold" style={{ color: s.text }}>{check.label}</p>
+            <StatusPill status={check.status} />
+            {showRank && index === 0 && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-gray-800 text-white uppercase tracking-wider">
+                Start Here
+              </span>
+            )}
+          </div>
+          <p className="text-[13px] text-gray-700 mt-1.5 leading-relaxed">
+            <span className="font-semibold text-gray-500">Detected: </span>{check.detail}
+          </p>
+          {check.impact && (
+            <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+              <span className="font-semibold">Why it matters: </span>{check.impact}
+            </p>
+          )}
+          {check.fix && (
+            <div className="mt-2.5 flex items-start gap-1.5">
+              <svg className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: s.dot }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+              <p className="text-xs font-medium text-gray-600">
+                <span className="font-semibold">Opportunity: </span>{check.fix}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-    return () => clearInterval(interval);
-  }, []);
+/** Group findings under their section headings, in the order the service type defines. */
+function CategorySection({
+  title,
+  checks,
+  categoryOrder,
+  showCategories,
+  showRank,
+}: {
+  title: string;
+  checks: Check[];
+  categoryOrder: readonly string[];
+  showCategories: boolean;
+  showRank: boolean;
+}) {
+  if (checks.length === 0) return null;
 
-  useEffect(() => {
-    // Cycle through steps based on progress
-    if (progress < 10) setStep(0);
-    else if (progress < 25) setStep(1);
-    else if (progress < 45) setStep(2);
-    else if (progress < 60) setStep(3);
-    else if (progress < 75) setStep(4);
-    else if (progress < 88) setStep(5);
-    else setStep(6);
-  }, [progress]);
+  const grouped = categoryOrder
+    .map((cat) => ({ cat, items: checks.filter((c) => c.category === cat) }))
+    .filter((g) => g.items.length > 0);
+
+  // Anything with an unrecognised category still gets rendered rather than dropped.
+  const known = new Set(categoryOrder);
+  const orphans = checks.filter((c) => !known.has(c.category));
+  if (orphans.length > 0) grouped.push({ cat: "Other", items: orphans });
+
+  let runningIndex = 0;
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-xl shadow-gray-200/50 border border-gray-100 p-8">
-          {/* Icon */}
-          <div className="flex justify-center mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center">
-              <svg className="w-7 h-7 text-blue-600 animate-pulse" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
-              </svg>
+    <div className="space-y-0">
+      {grouped.map(({ cat, items }) => (
+        <div key={cat}>
+          {showCategories && (
+            <div className="flex items-center gap-2 pt-4 pb-1 first:pt-0">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{cat}</p>
+              <div className="flex-1 h-px bg-gray-200" />
+              <p className="text-[10px] font-semibold text-gray-300">{items.length}</p>
             </div>
-          </div>
-
-          {/* Title */}
-          <h2 className="text-center text-lg font-bold text-gray-900 mb-1">Scanning Your Website</h2>
-          <p className="text-center text-sm text-gray-400 mb-6">Running Google Lighthouse analysis</p>
-
-          {/* Progress Bar */}
-          <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden mb-3">
-            <div
-              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-
-          {/* Progress Text */}
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-xs text-gray-500 font-medium">{steps[step]}</p>
-            <p className="text-xs text-gray-400 font-semibold">{Math.round(progress)}%</p>
-          </div>
-
-          {/* Subtle note */}
-          <p className="text-[11px] text-gray-300 text-center">This may take up to 30 seconds for a thorough analysis</p>
+          )}
+          {items.map((check) => {
+            const idx = runningIndex++;
+            return <FindingRow key={`${cat}-${check.label}`} check={check} index={idx} showRank={showRank} />;
+          })}
         </div>
+      ))}
+      {/* title is used for a11y grouping only; the visual heading lives in the parent card */}
+      <span className="sr-only">{title}</span>
+    </div>
+  );
+}
+
+// ===== Tracking Stack Breakdown (digital marketing) =====
+function TrackingRow({ label, present }: { label: string; present: boolean | null }) {
+  if (present === null) return null;
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <span className="text-xs text-gray-600">{label}</span>
+      <span
+        className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold"
+        style={present
+          ? { backgroundColor: "rgba(16,185,129,0.12)", color: "#059669" }
+          : { backgroundColor: "rgba(148,163,184,0.15)", color: "#94a3b8" }}
+        aria-label={present ? "Detected" : "Not detected"}
+      >
+        {present ? "✓" : "–"}
+      </span>
+    </div>
+  );
+}
+
+function TrackingStackPanel({ s }: { s: AuditSignals }) {
+  // Only render once the deeper marketing signals exist — a lead enriched before this
+  // analysis shipped would otherwise show an all-blank grid.
+  if (s.hasTagManager === null && s.hasClarity === null && s.hasMicrosoftUET === null) return null;
+
+  const retargetingPlatforms = s.techByCategory?.retargeting || [];
+  const anyRetargeting = !!(s.hasRetargeting || s.hasFacebookPixel);
+
+  const groups: { title: string; rows: { label: string; present: boolean | null }[] }[] = [
+    {
+      title: "Analytics",
+      rows: [
+        { label: "Google Analytics", present: s.hasAnalytics },
+        { label: "Tag Manager", present: s.hasTagManager },
+        { label: "Microsoft Clarity", present: s.hasClarity },
+        { label: "Hotjar", present: s.hasHotjar },
+      ],
+    },
+    {
+      title: "Advertising",
+      rows: [
+        { label: "Google Ads tracking", present: s.hasGoogleAds },
+        { label: "Meta Pixel", present: s.hasFacebookPixel },
+        { label: "Microsoft Ads UET", present: s.hasMicrosoftUET },
+      ],
+    },
+    {
+      title: "Retargeting",
+      rows: [
+        { label: retargetingPlatforms.length > 0 ? retargetingPlatforms.slice(0, 2).join(", ") : "Retargeting pixels", present: anyRetargeting },
+      ],
+    },
+    {
+      title: "Automation",
+      rows: [
+        { label: "Marketing automation", present: s.hasHubSpot },
+        { label: "Email platform", present: s.hasEmailMarketing },
+        { label: "Live chat", present: s.hasLiveChat },
+      ],
+    },
+  ];
+
+  return (
+    <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+      <div className="flex items-center gap-2 mb-1">
+        <div className="w-7 h-7 rounded-lg bg-indigo-100 flex items-center justify-center">
+          <svg className="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+        </div>
+        <p className="text-sm font-bold text-gray-900">Tracking Stack</p>
+      </div>
+      <p className="text-xs text-gray-400 mb-4 ml-9">What we could and could not detect in the page source</p>
+
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+        {groups.map((g) => (
+          <div key={g.title}>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1 pb-1 border-b border-gray-100">{g.title}</p>
+            {g.rows.map((r) => <TrackingRow key={r.label} label={r.label} present={r.present} />)}
+          </div>
+        ))}
+      </div>
+
+      <p className="mt-4 text-[11px] text-gray-400 leading-relaxed">
+        A dash means the tool was not detected in the HTML we analyzed — it does not confirm the business isn&apos;t using it elsewhere.
+      </p>
+    </div>
+  );
+}
+
+// ===== Funnel Readiness (digital marketing) =====
+function FunnelReadinessPanel({ checks }: { checks: Check[] }) {
+  const stages = MARKETING_CATEGORIES.map((cat) => {
+    const items = checks.filter((c) => c.category === cat);
+    const passed = items.filter((c) => c.status === "good").length;
+    return { cat, passed, total: items.length };
+  }).filter((s) => s.total > 0);
+
+  if (stages.length === 0) return null;
+
+  return (
+    <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+      <p className="text-sm font-bold text-gray-900 mb-1">Funnel Readiness</p>
+      <p className="text-xs text-gray-400 mb-5">How complete each stage of the customer journey looks from the outside</p>
+      <div className="space-y-4">
+        {stages.map(({ cat, passed, total }) => {
+          const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+          const color = pct >= 70 ? "#10b981" : pct >= 40 ? "#f59e0b" : "#ef4444";
+          return (
+            <div key={cat}>
+              <div className="flex justify-between items-center mb-1.5">
+                <span className="text-xs font-semibold text-gray-700">{cat}</span>
+                <span className="text-xs font-bold" style={{ color }}>{passed}/{total}</span>
+              </div>
+              <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full rounded-full transition-all duration-1000" style={{ width: `${pct}%`, backgroundColor: color }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ===== Technical SEO snapshot =====
+function StatTile({ label, value, tone }: { label: string; value: string; tone: "good" | "bad" | "neutral" }) {
+  const color = tone === "good" ? "#059669" : tone === "bad" ? "#dc2626" : "#334155";
+  const bg = tone === "good" ? "rgba(16,185,129,0.06)" : tone === "bad" ? "rgba(239,68,68,0.06)" : "rgba(148,163,184,0.08)";
+  return (
+    <div className="rounded-xl p-3 text-center" style={{ background: bg }}>
+      <p className="text-base font-extrabold leading-tight" style={{ color }}>{value}</p>
+      <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mt-1">{label}</p>
+    </div>
+  );
+}
+
+function SeoSnapshotPanel({ s }: { s: AuditSignals }) {
+  if (s.hasRobotsTxt === null && s.hasSitemap === null && s.pagesAnalyzed === null) return null;
+
+  const tiles: { label: string; value: string; tone: "good" | "bad" | "neutral" }[] = [];
+
+  if (s.pagesAnalyzed !== null) tiles.push({ label: "Pages Analyzed", value: String(s.pagesAnalyzed), tone: "neutral" });
+  if (s.hasRobotsTxt !== null) tiles.push({ label: "robots.txt", value: s.hasRobotsTxt ? "Found" : "None", tone: s.hasRobotsTxt ? "good" : "bad" });
+  if (s.hasSitemap !== null) {
+    tiles.push({
+      label: "Sitemap",
+      value: s.hasSitemap ? (s.sitemapUrlCount ? `${s.sitemapUrlCount} URLs` : "Found") : "None",
+      tone: s.hasSitemap ? "good" : "bad",
+    });
+  }
+  if (s.redirectsToHttps !== null) tiles.push({ label: "HTTP → HTTPS", value: s.redirectsToHttps ? "Redirects" : "No redirect", tone: s.redirectsToHttps ? "good" : "bad" });
+  if (s.hasCanonical !== null) tiles.push({ label: "Canonical", value: s.hasCanonical ? "Present" : "Missing", tone: s.hasCanonical ? "good" : "bad" });
+  if (s.isIndexable !== null) tiles.push({ label: "Indexable", value: s.isIndexable ? "Yes" : "Noindex", tone: s.isIndexable ? "good" : "bad" });
+  if (s.altTextCoverage !== null && (s.imageCount ?? 0) > 0) {
+    tiles.push({ label: "Alt Coverage", value: `${s.altTextCoverage}%`, tone: s.altTextCoverage >= 80 ? "good" : "bad" });
+  }
+  if (s.wordCount !== null) tiles.push({ label: "Words on Page", value: String(s.wordCount), tone: s.isThinContent ? "bad" : "good" });
+  if (s.checkedLinkCount !== null && s.checkedLinkCount > 0) {
+    tiles.push({
+      label: "Broken Links",
+      value: `${s.brokenInternalLinks.length}/${s.checkedLinkCount}`,
+      tone: s.brokenInternalLinks.length === 0 ? "good" : "bad",
+    });
+  }
+  if (s.h1Count !== null) tiles.push({ label: "H1 Headings", value: String(s.h1Count), tone: s.h1Count === 1 ? "good" : "bad" });
+  if (s.schemaTypes.length > 0) tiles.push({ label: "Schema Types", value: String(s.schemaTypes.length), tone: "good" });
+  if (s.titleLength !== null && s.titleLength > 0) {
+    tiles.push({ label: "Title Length", value: `${s.titleLength}`, tone: s.titleLength >= 30 && s.titleLength <= 60 ? "good" : "bad" });
+  }
+
+  if (tiles.length === 0) return null;
+
+  return (
+    <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+      <p className="text-sm font-bold text-gray-900 mb-1">Technical Snapshot</p>
+      <p className="text-xs text-gray-400 mb-4">Measured directly from the site during this analysis</p>
+      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+        {tiles.map((t) => <StatTile key={t.label} {...t} />)}
+      </div>
+      {s.schemaTypes.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-100">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Structured Data Types Found</p>
+          <div className="flex flex-wrap gap-1.5">
+            {s.schemaTypes.slice(0, 12).map((t) => (
+              <span key={t} className="px-2 py-1 rounded-md text-[11px] font-semibold bg-violet-50 text-violet-700 ring-1 ring-violet-200">{t}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== Marketing technology inventory =====
+function MarketingStackPanel({ s }: { s: AuditSignals }) {
+  const tech = s.marketingTechnologies;
+  if (!tech || tech.length === 0) return null;
+  return (
+    <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+      <p className="text-sm font-bold text-gray-900 mb-1">Marketing Tools Detected</p>
+      <p className="text-xs text-gray-400 mb-3">{tech.length} tool{tech.length === 1 ? "" : "s"} identified from the page source</p>
+      <div className="flex flex-wrap gap-2">
+        {tech.map((t) => (
+          <span key={t} className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200">{t}</span>
+        ))}
       </div>
     </div>
   );
@@ -299,422 +496,46 @@ export default function AuditReportPage() {
 
   const s = data.signals;
   const currentYear = new Date().getFullYear();
-
-  // Build checklist — each issue has impact statement + recommendation
-  type Check = { label: string; pass: boolean; detail: string; impact: string; fix: string; icon: string };
-  const checks: Check[] = [];
   const industry = data.industry || "Local Business";
   const serviceType = data.serviceType || "web_dev";
+  const isMarketing = serviceType === "digital_marketing" || serviceType === "social_media";
+  const isSeo = serviceType === "seo";
 
-  if (serviceType === "digital_marketing" || serviceType === "social_media") {
-    // ===== DIGITAL MARKETING / SMMA AUDIT CHECKS =====
+  // Build findings for the service type this report was generated for.
+  const checks: Check[] = isMarketing
+    ? buildMarketingChecks(s, industry)
+    : isSeo
+    ? buildSeoChecks(s, industry)
+    : buildWebDevChecks(s, industry, currentYear);
 
-    if (s.hasAnalytics !== null) {
-      checks.push({
-        label: s.hasAnalytics ? "Google Analytics Active" : "No Google Analytics — Flying Blind",
-        pass: s.hasAnalytics,
-        icon: "📊",
-        detail: s.hasAnalytics
-          ? "You're tracking website visitors — you can see where they come from and what they do on your site."
-          : "Your website has zero tracking. You have no idea how many people visit, where they come from, which pages they look at, or why they leave without contacting you.",
-        impact: s.hasAnalytics ? "" : "Without analytics, every marketing decision is a guess. You can't know what's working, what's wasting money, or where customers are dropping off.",
-        fix: s.hasAnalytics ? "" : "Requires Google Analytics 4 setup, conversion event configuration, and proper data stream integration.",
-      });
-    }
+  const categoryOrder: readonly string[] = isMarketing
+    ? MARKETING_CATEGORIES
+    : isSeo
+    ? SEO_CATEGORIES
+    : WEB_DEV_CATEGORIES;
 
-    if (s.hasFacebookPixel !== null) {
-      checks.push({
-        label: s.hasFacebookPixel ? "Facebook/Meta Pixel Active" : "No Facebook/Meta Pixel",
-        pass: s.hasFacebookPixel,
-        icon: "🎯",
-        detail: s.hasFacebookPixel
-          ? "You're tracking visitors for Facebook/Instagram retargeting — you can show ads to people who already visited your site."
-          : "No Meta Pixel detected. Every person who visits your site and leaves? Gone forever. You can't show them follow-up ads on Facebook or Instagram — they visited, left, and you lost them.",
-        impact: s.hasFacebookPixel ? "" : "97% of first-time visitors don't convert. Without a pixel, you can't retarget them with ads — the cheapest, highest-converting ad strategy available.",
-        fix: s.hasFacebookPixel ? "" : "Requires Meta Pixel installation, event tracking setup, and custom audience configuration in Ads Manager.",
-      });
-    }
+  // Web dev uses a single category, so its section headers are suppressed and the
+  // report renders as the flat list it always has.
+  const showCategories = categoryOrder.length > 1;
 
-    if (s.hasGoogleAds !== null) {
-      checks.push({
-        label: s.hasGoogleAds ? "Google Ads Tracking Active" : "No Google Ads Conversion Tracking",
-        pass: s.hasGoogleAds,
-        icon: "💰",
-        detail: s.hasGoogleAds
-          ? "Google Ads conversion tag is active — you can measure which ads and keywords drive real customers."
-          : `Search for "${industry.toLowerCase()} near me" right now. Your competitors are paying to appear at the very top. You have no conversion tracking — even if you ran ads, you'd have no idea which ones actually generate customers.`,
-        impact: s.hasGoogleAds ? "" : "Without conversion tracking, you can't optimize ad spend. You'd be paying for clicks with no way to know which ones turned into paying customers.",
-        fix: s.hasGoogleAds ? "" : "Requires Google Ads tag installation, conversion action setup, and proper attribution configuration.",
-      });
-    }
+  const passChecks = checks.filter((c) => c.status === "good");
+  // Most severe first so the reader hits the consequential findings before the polish.
+  const failChecks = checks
+    .filter((c) => c.status !== "good")
+    .sort((a, b) => b.severity - a.severity);
 
-    if (s.hasRetargeting !== null && s.hasFacebookPixel !== null) {
-      const hasAnyRetargeting = s.hasRetargeting || s.hasFacebookPixel;
-      if (!hasAnyRetargeting) {
-        checks.push({
-          label: "Zero Retargeting Setup",
-          pass: false,
-          icon: "🔄",
-          detail: "No retargeting pixels detected — Facebook, TikTok, LinkedIn, none. When someone visits your site and doesn't call or book immediately, they're gone. No follow-up ads, no reminders, nothing.",
-          impact: "Retargeting ads have 10x higher click-through rates than regular display ads. It's the lowest-cost, highest-ROI channel — and you're not using it at all.",
-          fix: "Requires pixel installation across ad platforms, audience segmentation, and retargeting campaign strategy.",
-        });
-      }
-    }
-
-    if (s.hasLeadCaptureForm !== null) {
-      checks.push({
-        label: s.hasLeadCaptureForm ? "Lead Capture Form Found" : "No Lead Capture / Email Signup",
-        pass: s.hasLeadCaptureForm,
-        icon: "📥",
-        detail: s.hasLeadCaptureForm
-          ? "You have a way to collect visitor emails — you can nurture leads who aren't ready to buy yet."
-          : "No email signup, newsletter form, or lead magnet found. The 95% of visitors who aren't ready to buy TODAY leave your site with no way for you to follow up. They forget about you by tomorrow.",
-        impact: s.hasLeadCaptureForm ? "" : "Email marketing has an average ROI of $36 for every $1 spent. Without capturing emails, you lose every visitor who needs more time to decide.",
-        fix: s.hasLeadCaptureForm ? "" : "Requires a lead magnet (free guide, discount, etc.), opt-in form placement, and email automation setup.",
-      });
-    }
-
-    if (s.hasEmailMarketing !== null) {
-      checks.push({
-        label: s.hasEmailMarketing ? "Email Marketing Platform Detected" : "No Email Marketing System",
-        pass: s.hasEmailMarketing,
-        icon: "✉️",
-        detail: s.hasEmailMarketing
-          ? "You're connected to an email marketing platform — automated follow-ups and campaigns are possible."
-          : "No email marketing tool found (Mailchimp, HubSpot, Klaviyo, etc.). Even if someone gave you their email, you have no automated way to nurture them into a customer.",
-        impact: s.hasEmailMarketing ? "" : "Businesses with automated email sequences see 320% more revenue from email than those without. Manual follow-up doesn't scale.",
-        fix: s.hasEmailMarketing ? "" : "Requires platform selection, list setup, welcome sequence creation, and integration with your website.",
-      });
-    }
-
-    if (s.hasCTA !== null) {
-      checks.push({
-        label: s.hasCTA ? "Clear Call-to-Action Found" : "No Clear Call-to-Action",
-        pass: s.hasCTA,
-        icon: "👆",
-        detail: s.hasCTA
-          ? "Your website has a clear action for visitors to take above the fold — they know immediately what to do next."
-          : "When someone lands on your homepage, there's no obvious next step. No prominent 'Get a Quote', 'Book Now', or 'Call Us' button above the fold. Visitors have to hunt for how to contact you — most won't bother.",
-        impact: s.hasCTA ? "" : "Pages with a single clear CTA increase conversions by 371% compared to pages with no clear action. Every second of confusion = lost customers.",
-        fix: s.hasCTA ? "" : "Requires strategic button placement, compelling copy, and A/B testing for maximum conversion.",
-      });
-    }
-
-    if (s.hasOpenGraph !== null) {
-      checks.push({
-        label: s.hasOpenGraph ? "Social Sharing Tags Active" : "Broken Social Sharing",
-        pass: s.hasOpenGraph,
-        icon: "🔗",
-        detail: s.hasOpenGraph
-          ? "When your site is shared on social media, it shows a professional image + description — makes people want to click."
-          : "Share your website on Facebook or WhatsApp right now. It shows a broken preview — no image, no description. Looks unprofessional and nobody clicks it.",
-        impact: s.hasOpenGraph ? "" : "Links with rich previews (image + description) get 2-5x more clicks than those without. Every time someone shares your business, it looks broken.",
-        fix: s.hasOpenGraph ? "" : "Requires Open Graph meta tags (og:title, og:image, og:description) properly configured for each page.",
-      });
-    }
-
-    if (s.googleRating !== null) {
-      const goodRating = s.googleRating >= 4.0;
-      checks.push({
-        label: goodRating ? `Google Rating: ${s.googleRating}★ (${s.googleReviewCount || 0} reviews)` : `Low Google Rating: ${s.googleRating}★`,
-        pass: goodRating && (s.googleReviewCount || 0) >= 10,
-        icon: "⭐",
-        detail: goodRating
-          ? `Your business has a solid ${s.googleRating}-star rating on Google with ${s.googleReviewCount || 0} reviews — this builds trust with new customers seeing your ads.`
-          : `Your Google rating is ${s.googleRating} stars${s.googleReviewCount ? ` with only ${s.googleReviewCount} reviews` : ""}. When someone clicks your ad and checks reviews before calling, a sub-4-star rating kills the conversion. You paid for the click but lost the customer.`,
-        impact: goodRating ? "" : "88% of consumers check reviews before choosing a local business. Low ratings mean your ad spend is wasted — people click but don't convert.",
-        fix: goodRating ? "" : "A systematic review generation strategy can improve your rating and volume within 60-90 days.",
-      });
-    } else {
-      checks.push({
-        label: "No Google Business Profile Detected — Invisible to Local Searchers",
-        pass: false,
-        icon: "⭐",
-        detail: "We couldn't find a Google Business Profile for your business. When potential customers search for your services nearby, they see your competitors' listings with reviews, photos, and contact info — but not yours.",
-        impact: "88% of consumers who do a local search on their phone visit or call a business within 24 hours. Without a Google Business Profile, you're missing out on these high-intent customers entirely.",
-        fix: "Set up a Google Business Profile with complete business information, high-quality photos, and service descriptions. Then build a review generation system to establish social proof.",
-      });
-    }
-
-    if (s.hasSchemaMarkup !== null) {
-      checks.push({
-        label: s.hasSchemaMarkup ? "Structured Data Present" : "No Structured Data / Schema Markup",
-        pass: s.hasSchemaMarkup,
-        icon: "🏷️",
-        detail: s.hasSchemaMarkup
-          ? "Your site has structured data — search engines understand your business type, services, hours, and reviews."
-          : "No schema markup detected. Google doesn't fully understand what your business does, your hours, or your services. Your search listing is plain text while competitors show stars, hours, and rich info.",
-        impact: s.hasSchemaMarkup ? "" : "Rich snippets in search results get 58% more clicks. Without schema, your listing blends in with everything else.",
-        fix: s.hasSchemaMarkup ? "" : "Requires LocalBusiness schema, FAQ schema, and service area markup implementation.",
-      });
-    }
-
-    checks.push({
-      label: s.socialLinks >= 2 ? `Active on ${s.socialLinks} Social Platforms` : s.socialLinks === 1 ? "Only 1 Social Profile Linked" : "No Social Media Presence",
-      pass: s.socialLinks >= 2,
-      icon: "👥",
-      detail: s.socialLinks >= 2
-        ? "Your website links to multiple social profiles — customers can verify you're active and engaged across platforms."
-        : `No social media links found on your website. When a potential customer wants to check your Instagram or Facebook to see your work, reviews, or activity — they find nothing. For a ${industry.toLowerCase()}, that's a major trust signal missing.`,
-      impact: s.socialLinks >= 2 ? "" : "71% of consumers who have a positive social media experience with a brand are likely to recommend it. No presence = no social proof = lower ad conversion rates.",
-      fix: s.socialLinks >= 2 ? "" : "Link active profiles from your website, maintain consistent branding, and post regularly to build social proof.",
-    });
-
-  } else if (serviceType === "seo") {
-    // ===== SEO AUDIT CHECKS =====
-
-    // Performance check — SEO users care about speed as ranking factor
-    const mobilePerf = s.pageSpeed?.mobile?.performanceScore;
-    if (mobilePerf !== undefined && mobilePerf !== null) {
-      const fast = mobilePerf >= 50;
-      checks.push({
-        label: fast ? `Performance Score — ${mobilePerf}/100` : `Poor Performance — ${mobilePerf}/100 (Google Ranking Factor)`,
-        pass: fast,
-        icon: "⚡",
-        detail: fast
-          ? `Google rates your mobile site performance at ${mobilePerf}/100. This is within acceptable range and shouldn't hurt your rankings.`
-          : `Google rates your mobile site performance at ${mobilePerf} out of 100. You can verify this — go to pagespeed.web.dev and enter your URL. Google has confirmed page speed is a direct ranking factor.`,
-        impact: fast ? "" : "Google's Page Experience update uses Core Web Vitals as a ranking signal. Sites scoring below 50 are penalized in search results — you're literally being ranked lower because of speed.",
-        fix: fast ? "" : "Requires image optimization, code minification, server improvements, and render-blocking resource elimination.",
-      });
-    } else if (s.pageLoadTimeMs !== null) {
-      const secs = (s.pageLoadTimeMs / 1000).toFixed(1);
-      const fast = s.pageLoadTimeMs <= 3000;
-      checks.push({
-        label: fast ? `Fast Load Speed — ${secs}s` : `Slow Load Speed — ${secs}s (Hurts Rankings)`,
-        pass: fast,
-        icon: "⚡",
-        detail: fast
-          ? "Your site loads within Google's recommended 3-second window."
-          : `Your website takes ${secs} seconds to load. Google penalizes slow sites in search rankings — you're losing positions to faster competitors.`,
-        impact: fast ? "" : "Google research shows 53% of mobile visitors leave after 3 seconds. High bounce rates signal to Google that your content isn't relevant — pushing you further down.",
-        fix: fast ? "" : "Requires server optimization, image compression, caching strategy, and render pipeline improvements.",
-      });
-    }
-
-    if (s.isMobileFriendly !== null) {
-      checks.push({
-        label: s.isMobileFriendly ? "Mobile-Friendly (Google Requirement)" : "Not Mobile-Friendly — Google Penalizes This",
-        pass: s.isMobileFriendly,
-        icon: "📱",
-        detail: s.isMobileFriendly
-          ? "Your site passes Google's mobile-friendly test — you won't be penalized in mobile search results."
-          : "Your site is not mobile-friendly. Since Google's mobile-first indexing update, Google primarily uses the mobile version of your site for ranking. A non-mobile site is being actively penalized.",
-        impact: s.isMobileFriendly ? "" : "Google has used mobile-first indexing for all sites since 2023. If your mobile experience is poor, your rankings suffer across ALL devices — not just mobile.",
-        fix: s.isMobileFriendly ? "" : "Requires full responsive redesign to pass Google's mobile-friendly criteria.",
-      });
-    }
-
-    if (s.hasMetaDescription !== null) {
-      checks.push({
-        label: s.hasMetaDescription ? "Meta Description Present" : "Missing Meta Description — Lower Click-Through Rate",
-        pass: s.hasMetaDescription,
-        icon: "🔍",
-        detail: s.hasMetaDescription
-          ? "Your homepage has a meta description — Google shows it in search results to help people decide to click."
-          : "No meta description found. Google auto-generates one by pulling random text from your page. Search for your business name — the description under your listing is random, unhelpful content.",
-        impact: s.hasMetaDescription ? "" : "Pages with optimized meta descriptions get 5.8% higher click-through rates. Google also uses CTR as a ranking signal — fewer clicks = lower rankings over time.",
-        fix: s.hasMetaDescription ? "" : "Each page needs a unique, keyword-optimized description (150-160 chars) that matches search intent.",
-      });
-    }
-
-    if (s.hasSSL !== null) {
-      checks.push({
-        label: s.hasSSL ? "SSL Certificate Active (HTTPS)" : "No SSL — Google Ranking Penalty",
-        pass: s.hasSSL,
-        icon: "🔒",
-        detail: s.hasSSL
-          ? "Your site uses HTTPS — Google confirmed this as a ranking signal since 2014."
-          : "Your site has no SSL certificate. Google has explicitly stated HTTPS is a ranking factor. You're giving up free ranking points to every competitor who has SSL.",
-        impact: s.hasSSL ? "" : "Google Chrome shows 'Not Secure' to visitors AND ranks you lower. Double penalty — fewer clicks from search AND lower ranking position.",
-        fix: s.hasSSL ? "" : "Requires SSL certificate installation, proper redirects, and mixed-content resolution.",
-      });
-    }
-
-    if (s.hasSchemaMarkup !== null) {
-      checks.push({
-        label: s.hasSchemaMarkup ? "Schema Markup Present" : "No Schema Markup — Missing Rich Snippets",
-        pass: s.hasSchemaMarkup,
-        icon: "🏷️",
-        detail: s.hasSchemaMarkup
-          ? "Your site has structured data — this enables rich snippets (stars, FAQ, hours) in search results."
-          : "No structured data found. Your Google listing shows plain text while competitors show star ratings, business hours, FAQ dropdowns, and service areas. You're invisible by comparison.",
-        impact: s.hasSchemaMarkup ? "" : "Rich snippets increase click-through rates by up to 58%. For local businesses, LocalBusiness schema directly impacts Google Maps and local pack rankings.",
-        fix: s.hasSchemaMarkup ? "" : "Requires JSON-LD implementation: LocalBusiness, FAQPage, Service, and Review schema markup.",
-      });
-    }
-
-    if (s.hasAnalytics !== null) {
-      checks.push({
-        label: s.hasAnalytics ? "Analytics Tracking Active" : "No Analytics — Can't Measure SEO Results",
-        pass: s.hasAnalytics,
-        icon: "📊",
-        detail: s.hasAnalytics
-          ? "You're tracking visitor data — essential for measuring SEO performance and identifying opportunities."
-          : "No Google Analytics detected. You have no way to track organic search traffic, see which keywords drive visits, or measure if SEO improvements are working.",
-        impact: s.hasAnalytics ? "" : "Without analytics, you can't identify which pages rank, which keywords drive traffic, or where visitors drop off. SEO without measurement is guesswork.",
-        fix: s.hasAnalytics ? "" : "Requires GA4 setup, Search Console integration, and conversion tracking for organic traffic.",
-      });
-    }
-
-    if (s.googleRating !== null) {
-      const goodRating = s.googleRating >= 4.0;
-      checks.push({
-        label: goodRating ? `Google Rating: ${s.googleRating}★ (${s.googleReviewCount || 0} reviews)` : `Low Google Rating: ${s.googleRating}★ — Hurts Local SEO`,
-        pass: goodRating && (s.googleReviewCount || 0) >= 10,
-        icon: "⭐",
-        detail: goodRating
-          ? `${s.googleRating}-star rating with ${s.googleReviewCount || 0} reviews — strong signal for local pack rankings.`
-          : `Your rating is ${s.googleRating} stars${s.googleReviewCount ? ` with ${s.googleReviewCount} reviews` : ""}. Google uses review quality and quantity as a direct local ranking factor. Businesses with more, better reviews rank higher in the local pack (map results).`,
-        impact: goodRating ? "" : "Reviews are one of Google's top 3 local ranking factors. Low review count or rating directly pushes you below competitors in Google Maps and local search.",
-        fix: goodRating ? "" : "A review generation system targeting happy customers can significantly improve both rating and volume within 60-90 days.",
-      });
-    } else {
-      checks.push({
-        label: "No Google Business Profile Detected — Missing from Local Pack",
-        pass: false,
-        icon: "⭐",
-        detail: "We couldn't find a Google Business Profile for your business. This means you're not appearing in Google Maps or the local 3-pack when people search for your services in your area.",
-        impact: "The Google local pack (map results) gets 42% of all clicks for local searches. Without a Google Business Profile, you're invisible to nearly half of potential customers searching for your service.",
-        fix: "Create and optimize a Google Business Profile with accurate business info, photos, services, and hours. Then implement a review generation strategy to build credibility.",
-      });
-    }
-
-    checks.push({
-      label: s.socialLinks >= 2 ? `${s.socialLinks} Social Profiles Linked` : "Few/No Social Signals",
-      pass: s.socialLinks >= 2,
-      icon: "👥",
-      detail: s.socialLinks >= 2
-        ? "Multiple social profiles linked from your site — these create brand signals that support SEO authority."
-        : "Minimal social media presence. While social links aren't a direct ranking factor, they create brand signals, drive referral traffic, and help Google understand your business as a real entity.",
-      impact: s.socialLinks >= 2 ? "" : "Google's entity recognition relies on consistent brand presence across the web. No social footprint makes it harder for Google to trust your business as legitimate.",
-      fix: s.socialLinks >= 2 ? "" : "Establish profiles on key platforms and link them from your website to create consistent brand signals.",
-    });
-
-  } else {
-    // ===== WEB DEV AUDIT CHECKS (default — existing behavior) =====
-
-    if (s.hasSSL !== null) {
-      checks.push({
-        label: s.hasSSL ? "SSL Certificate Active" : "No SSL — Browser Shows \"Not Secure\"",
-        pass: s.hasSSL,
-        icon: "🔒",
-        detail: s.hasSSL
-          ? "Your site shows the lock icon — visitors see it as trustworthy and safe to use."
-          : "Every person who visits your site sees a \"Not Secure\" warning in Chrome. Open your site right now and look at the address bar — you'll see it.",
-        impact: s.hasSSL ? "" : "85% of consumers say they won't continue browsing an unsecure website. That's 8 out of 10 potential customers gone before they even read anything.",
-        fix: s.hasSSL ? "" : "Requires proper certificate installation, server configuration, and redirect setup to avoid mixed-content errors.",
-      });
-    }
-    if (s.isMobileFriendly !== null) {
-      checks.push({
-        label: s.isMobileFriendly ? "Mobile-Friendly Design" : "Not Optimized for Mobile",
-        pass: s.isMobileFriendly,
-        icon: "📱",
-        detail: s.isMobileFriendly
-          ? "Your site adapts to phone screens — text is readable, buttons are tappable, navigation works."
-          : `Pull up your site on your phone right now. If text is tiny, buttons overlap, or you have to pinch-to-zoom — that's what every mobile customer sees.`,
-        impact: s.isMobileFriendly ? "" : `63% of all Google searches come from mobile devices. For ${industry.toLowerCase()} businesses, most people searching "${industry.toLowerCase()} near me" are on their phone. If they can't navigate your site, they hit back and call your competitor.`,
-        fix: s.isMobileFriendly ? "" : "Requires a full responsive redesign across all page templates, navigation, and forms to work on every device.",
-      });
-    }
-    // Performance check — prefer Google PageSpeed score over raw load time
-    const mobilePerf = s.pageSpeed?.mobile?.performanceScore;
-    if (mobilePerf !== undefined && mobilePerf !== null) {
-      const fast = mobilePerf >= 50;
-      checks.push({
-        label: fast ? `Performance Score — ${mobilePerf}/100` : `Poor Performance — ${mobilePerf}/100`,
-        pass: fast,
-        icon: "⚡",
-        detail: fast
-          ? `Google rates your mobile site performance at ${mobilePerf}/100. This is within acceptable range for user experience.`
-          : `Google rates your mobile site performance at ${mobilePerf} out of 100. You can verify this yourself — go to pagespeed.web.dev and enter your website URL.`,
-        impact: fast ? "" : `Google uses page speed as a ranking factor. Sites scoring below 50 load so slowly that over half of mobile visitors leave before seeing your content — choosing a competitor instead.`,
-        fix: fast ? "" : "Requires image optimization, code minification, server improvements, and render-blocking resource elimination.",
-      });
-    } else if (s.pageLoadTimeMs !== null) {
-      const secs = (s.pageLoadTimeMs / 1000).toFixed(1);
-      const fast = s.pageLoadTimeMs <= 3000;
-      checks.push({
-        label: fast ? `Fast Load Speed — ${secs}s` : `Slow Load Speed — ${secs} seconds`,
-        pass: fast,
-        icon: "⚡",
-        detail: fast
-          ? "Your site loads within Google's recommended 3-second window. Visitors get instant access."
-          : `Your website takes ${secs} seconds to load. That's ${(parseFloat(secs) - 3).toFixed(1)} seconds over Google's recommendation. You can test this yourself — open your site and count.`,
-        impact: fast ? "" : "Google research shows 53% of mobile visitors leave if a page takes longer than 3 seconds. For every 100 people who click your site, roughly half are leaving before seeing anything.",
-        fix: fast ? "" : "Image compression, caching, and platform optimization can cut load time by 50–70%.",
-      });
-    }
-    if (s.hasOnlineBooking !== null) {
-      checks.push({
-        label: s.hasOnlineBooking ? "Online Booking Available" : "No Online Booking System",
-        pass: s.hasOnlineBooking,
-        icon: "📅",
-        detail: s.hasOnlineBooking
-          ? "Customers can schedule appointments directly from your website, 24/7, without calling."
-          : `There's no way for someone to book an appointment on your website. When a potential customer visits at 10pm and wants to schedule with a ${industry.toLowerCase()}, they can't — they'll Google the next option and book there instead.`,
-        impact: s.hasOnlineBooking ? "" : "Businesses with online booking report 2–3x more appointments than call-only businesses. 67% of customers prefer booking online over calling.",
-        fix: s.hasOnlineBooking ? "" : "Needs integration with your calendar, automated confirmations, and proper placement to maximize conversions.",
-      });
-    }
-    if (s.hasContactForm !== null) {
-      checks.push({
-        label: s.hasContactForm ? "Contact Form Found" : "No Contact Form",
-        pass: s.hasContactForm,
-        icon: "✉️",
-        detail: s.hasContactForm
-          ? "Visitors can send you a message directly from the website without leaving."
-          : "There's no contact form on your site. The only option for a visitor is to pick up the phone and call — and most people won't. They'll find a competitor with a simple \"Get a Quote\" form instead.",
-        impact: s.hasContactForm ? "" : "Contact forms capture leads 24/7, even when you're closed. Businesses without one miss every inquiry that happens outside of calling hours.",
-        fix: s.hasContactForm ? "" : "Requires strategic placement, spam protection, and integration with your workflow to capture leads effectively.",
-      });
-    }
-    if (s.hasMetaDescription !== null) {
-      checks.push({
-        label: s.hasMetaDescription ? "SEO Description Present" : "Missing SEO Description",
-        pass: s.hasMetaDescription,
-        icon: "🔍",
-        detail: s.hasMetaDescription
-          ? "When someone Googles your business, the search result shows a clear, compelling description of what you do."
-          : `Google your business name right now. Instead of a professional description, you'll see a blank or auto-generated snippet that looks unprofessional compared to competitors who have proper descriptions.`,
-        impact: s.hasMetaDescription ? "" : "Search results with optimized descriptions get 5.8% higher click-through rates. That's more people choosing your listing over competitors.",
-        fix: s.hasMetaDescription ? "" : "Each page needs a unique, keyword-optimized description that matches search intent for your services.",
-      });
-    }
-    checks.push({
-      label: s.socialLinks >= 2 ? `Active on ${s.socialLinks} Social Platforms` : s.socialLinks === 1 ? "Only 1 Social Profile" : "No Social Media Presence",
-      pass: s.socialLinks >= 2,
-      icon: "👥",
-      detail: s.socialLinks >= 2
-        ? "Your business shows up across multiple social platforms — customers can find and verify you on the channels they use."
-        : `When someone hears about your business and checks Instagram or Facebook to see your work, they find nothing. For a ${industry.toLowerCase()}, this is especially costly — people want to see your portfolio and social proof before reaching out.`,
-      impact: s.socialLinks >= 2 ? "" : "71% of consumers who have a positive social media experience with a brand are likely to recommend it. No presence means no word-of-mouth amplification.",
-      fix: s.socialLinks >= 2 ? "" : "Even one active profile with consistent posting builds trust and shows potential customers you're active and engaged.",
-    });
-    if (s.copyrightYear !== null) {
-      const fresh = s.copyrightYear >= currentYear - 1;
-      checks.push({
-        label: fresh ? `Copyright Up to Date (${s.copyrightYear})` : `Outdated Copyright — © ${s.copyrightYear}`,
-        pass: fresh,
-        icon: "📆",
-        detail: fresh
-          ? "Your website footer shows the current year — signals an active, maintained business."
-          : `Your website footer says © ${s.copyrightYear}. Scroll to the bottom of your site and check. To a visitor, this signals the business may be closed or that nobody is maintaining the website.`,
-        impact: fresh ? "" : `That's ${currentYear - s.copyrightYear} years out of date. Visitors subconsciously notice — it's a small detail that erodes trust, especially when competitors' sites look fresh.`,
-        fix: fresh ? "" : "A 10-second fix that instantly makes your site look current and maintained.",
-      });
-    }
-  }
-
-  const failChecks = checks.filter(c => !c.pass);
-  const passChecks = checks.filter(c => c.pass);
   const healthScore = Math.max(0, Math.min(100, 100 - data.score));
   const benchmark = data.benchmark ?? null;
   const industryAvg = benchmark ? benchmark.avgHealth : null;
-  const estimatedLossMin = failChecks.length * 8;
-  const estimatedLossMax = failChecks.length * 15;
+
+  // Impact estimate counts only materially significant findings, and caps the basis.
+  // With ~25 checks per report, multiplying every failing check would produce a figure
+  // large enough to read as invented.
+  const impactBasis = Math.min(8, failChecks.filter((c) => c.severity >= 2).length);
+  const estimatedLossMin = impactBasis * 8;
+  const estimatedLossMax = impactBasis * 15;
+
+  const issuesHeading = showCategories ? "What Needs Attention" : "What Needs Fixing";
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -735,9 +556,9 @@ export default function AuditReportPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "rgba(196,181,253,0.85)" }}>
-            {serviceType === "digital_marketing" || serviceType === "social_media"
+            {isMarketing
               ? "Digital Marketing Audit"
-              : serviceType === "seo"
+              : isSeo
               ? "SEO & Visibility Audit"
               : "Website Audit Report"}
             </span>
@@ -773,11 +594,15 @@ export default function AuditReportPage() {
             <p className="text-sm font-bold text-gray-900">Executive Summary</p>
           </div>
           <p className="text-sm text-gray-600 leading-relaxed">
-            We analyzed <span className="font-semibold text-gray-900">{data.company}</span>&apos;s online presence across {checks.length} key areas that directly impact whether potential customers choose you or a competitor.
+            We analyzed <span className="font-semibold text-gray-900">{data.company}</span>&apos;s online presence across {checks.length} checks
+            {s.pagesAnalyzed && s.pagesAnalyzed > 1 ? ` on ${s.pagesAnalyzed} pages` : ""}
+            {showCategories ? `, grouped into ${categoryOrder.length} areas` : ""}.
           </p>
           {failChecks.length > 0 && (
             <p className="text-sm text-gray-600 leading-relaxed mt-3">
-              <span className="font-semibold text-red-700">{failChecks.length} critical {failChecks.length === 1 ? "issue was" : "issues were"} found</span> that {failChecks.length === 1 ? "is" : "are"} actively driving customers to competitors. {failChecks.length >= 2 ? "The combination of these issues compounds the problem \u2014 each one makes the others worse." : ""}
+              <span className="font-semibold text-red-700">{failChecks.length} {failChecks.length === 1 ? "finding" : "findings"} may be worth addressing</span>
+              {passChecks.length > 0 ? `, and ${passChecks.length} ${passChecks.length === 1 ? "check" : "checks"} passed.` : "."}
+              {" "}Each one below states what we detected, why it matters, and what could be improved.
             </p>
           )}
           {data.opportunity && (
@@ -811,9 +636,9 @@ export default function AuditReportPage() {
         <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-6 pt-8 pb-6 flex flex-col items-center">
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-5">
-              {serviceType === "digital_marketing" || serviceType === "social_media"
+              {isMarketing
                 ? "Marketing Readiness Score"
-                : serviceType === "seo"
+                : isSeo
                 ? "SEO Health Score"
                 : "Digital Health Score"}
             </p>
@@ -823,7 +648,7 @@ export default function AuditReportPage() {
             <div className="grid grid-cols-3 divide-x divide-gray-200 text-center">
               <div className="px-2">
                 <p className="text-xl font-extrabold text-red-600">{failChecks.length}</p>
-                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mt-0.5">Issues</p>
+                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mt-0.5">Findings</p>
               </div>
               <div className="px-2">
                 <p className="text-xl font-extrabold text-emerald-600">{passChecks.length}</p>
@@ -837,8 +662,14 @@ export default function AuditReportPage() {
           </div>
         </div>
 
+        {/* Funnel readiness — digital marketing only */}
+        {isMarketing && <FunnelReadinessPanel checks={checks} />}
+
+        {/* Technical snapshot — SEO only */}
+        {isSeo && <SeoSnapshotPanel s={s} />}
+
         {/* Google Lighthouse Score — only for web_dev and seo */}
-        {(serviceType === "web_dev" || serviceType === "seo") && s.pageSpeed && (s.pageSpeed.mobile || s.pageSpeed.desktop) && (
+        {(serviceType === "web_dev" || isSeo) && s.pageSpeed && (s.pageSpeed.mobile || s.pageSpeed.desktop) && (
           <div className="mt-6">
             {/* Section Header */}
             <div className="flex items-center gap-2.5 mb-4">
@@ -1014,6 +845,9 @@ export default function AuditReportPage() {
           </div>
         )}
 
+        {/* Tracking stack — digital marketing only */}
+        {isMarketing && <TrackingStackPanel s={s} />}
+
         {/* How You Compare — only shown when we have a real benchmark */}
         {benchmark && industryAvg !== null && (
           <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
@@ -1051,78 +885,54 @@ export default function AuditReportPage() {
         )}
 
         {/* Estimated customer loss */}
-        {failChecks.length > 0 && (
+        {impactBasis > 0 && (
           <div className="mt-6 bg-gradient-to-r from-red-50 to-orange-50 rounded-2xl border border-red-200 p-6 text-center">
             <p className="text-[10px] font-bold text-red-800 uppercase tracking-widest mb-2">
-              {serviceType === "digital_marketing" || serviceType === "social_media"
-                ? "Estimated Monthly Revenue Loss"
-                : "Estimated Monthly Impact"}
+              {isMarketing ? "Estimated Monthly Revenue Impact" : "Estimated Monthly Impact"}
             </p>
             <p className="text-3xl font-extrabold text-red-700">{estimatedLossMin}&ndash;{estimatedLossMax}</p>
             <p className="text-sm font-semibold text-red-600 mt-1">
-              {serviceType === "digital_marketing" || serviceType === "social_media"
-                ? "potential leads lost per month"
-                : "potential customers lost per month"}
+              {isMarketing ? "potential leads that may be missed monthly" : "potential customers that may be missed monthly"}
             </p>
             <p className="text-xs text-red-500/70 mt-2 leading-relaxed">
-              Based on {failChecks.length} active {failChecks.length === 1 ? "issue" : "issues"} affecting your {serviceType === "digital_marketing" || serviceType === "social_media" ? "marketing effectiveness and lead conversion" : serviceType === "seo" ? "search visibility and rankings" : "online visibility and conversion rate"}
+              An indicative range based on {impactBasis} significant {impactBasis === 1 ? "finding" : "findings"} affecting {isMarketing ? "marketing effectiveness and lead conversion" : isSeo ? "search visibility and rankings" : "online visibility and conversion rate"}
             </p>
           </div>
         )}
 
-        {/* Issues */}
+        {/* Findings that need attention */}
         {failChecks.length > 0 && (
-          <div className="mt-6 bg-red-50 rounded-2xl border-2 border-red-200 p-6">
+          <div className="mt-6 bg-white rounded-2xl border-2 border-red-200 p-6">
             <div className="flex items-center gap-2 mb-1">
               <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center">
                 <svg className="w-4 h-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
               </div>
-              <p className="text-sm font-bold text-red-900">What Needs Fixing</p>
+              <p className="text-sm font-bold text-red-900">{issuesHeading}</p>
             </div>
-            <p className="text-xs text-red-600/70 mb-4 ml-9">Each issue below is actively sending customers to your competitors</p>
-            <div className="space-y-0">
-              {failChecks.map((check, i) => (
-                <div key={i} className={`py-4 ${i > 0 ? "border-t border-red-200/50" : ""}`}>
-                  <div className="flex items-start gap-3">
-                    <span className="text-base mt-0.5 flex-shrink-0">{check.icon}</span>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm font-bold text-red-800">{check.label}</p>
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-600 text-white uppercase tracking-wider">
-                          #{i + 1}{i === 0 ? " — Fix This First" : " Priority"}
-                        </span>
-                      </div>
-                      <p className="text-[13px] text-red-900/70 mt-1.5 leading-relaxed">{check.detail}</p>
-                      {check.impact && (
-                        <p className="text-xs text-red-700/60 mt-2 leading-relaxed italic">{check.impact}</p>
-                      )}
-                      {check.fix && (
-                        <div className="mt-2.5 flex items-start gap-1.5">
-                          <svg className="w-3.5 h-3.5 text-red-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
-                          <p className="text-xs font-medium text-red-700/80">{check.fix}</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <p className="text-xs text-gray-400 mb-2 ml-9">Ordered by likely impact — each finding states what we detected and what could be improved</p>
+            <CategorySection
+              title={issuesHeading}
+              checks={failChecks}
+              categoryOrder={categoryOrder}
+              showCategories={showCategories}
+              showRank={!showCategories}
+            />
           </div>
         )}
 
-        {/* Passed */}
+        {/* Passing checks */}
         {passChecks.length > 0 && (
-          <div className="mt-6 bg-emerald-50 rounded-2xl border-2 border-emerald-200 p-6">
+          <div className="mt-6 bg-white rounded-2xl border-2 border-emerald-200 p-6">
             <div className="flex items-center gap-2 mb-1">
               <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center">
                 <svg className="w-4 h-4 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
               </div>
               <p className="text-sm font-bold text-emerald-900">What&apos;s Working Well</p>
             </div>
-            <p className="text-xs text-emerald-600/70 mb-4 ml-9">Keep these up &mdash; they&apos;re giving you an edge</p>
+            <p className="text-xs text-gray-400 mb-2 ml-9">Keep these up &mdash; they&apos;re giving you an edge</p>
             <div className="space-y-0">
               {passChecks.map((check, i) => (
-                <div key={i} className={`flex items-start gap-3 py-3 ${i > 0 ? "border-t border-emerald-200/50" : ""}`}>
+                <div key={`${check.category}-${check.label}`} className={`flex items-start gap-3 py-3 ${i > 0 ? "border-t border-emerald-100" : ""}`}>
                   <span className="text-base mt-0.5 flex-shrink-0">{check.icon}</span>
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-emerald-800">{check.label}</p>
@@ -1133,6 +943,9 @@ export default function AuditReportPage() {
             </div>
           </div>
         )}
+
+        {/* Marketing technology inventory */}
+        {isMarketing && <MarketingStackPanel s={s} />}
 
         {/* Technologies */}
         {s.technologies.length > 0 && (
@@ -1153,16 +966,18 @@ export default function AuditReportPage() {
           <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
             <p className="text-sm font-bold text-gray-900 mb-2">The Bottom Line</p>
             <p className="text-sm text-gray-600 leading-relaxed">
-              Every day these {failChecks.length} {failChecks.length === 1 ? "issue goes" : "issues go"} unfixed, potential customers are finding your business online and choosing a competitor instead. The good news: {failChecks.length === 1 ? "this is" : "these are all"} fixable with the right expertise and a clear plan.
+              {showCategories
+                ? `These ${failChecks.length} findings are all addressable, and most are configuration rather than rebuild work. Fixed in the right order, they compound — the technical foundations make the on-page work count for more.`
+                : `Every day these ${failChecks.length} ${failChecks.length === 1 ? "issue goes" : "issues go"} unfixed, potential customers are finding your business online and choosing a competitor instead. The good news: ${failChecks.length === 1 ? "this is" : "these are all"} fixable with the right expertise and a clear plan.`}
             </p>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <div className="bg-gray-50 rounded-xl p-3 text-center">
                 <p className="text-lg font-extrabold text-gray-800">{failChecks.length}</p>
-                <p className="text-[10px] text-gray-400 font-semibold uppercase">Fixable {failChecks.length === 1 ? "Issue" : "Issues"}</p>
+                <p className="text-[10px] text-gray-400 font-semibold uppercase">Addressable {failChecks.length === 1 ? "Finding" : "Findings"}</p>
               </div>
               <div className="bg-gray-50 rounded-xl p-3 text-center">
                 <p className="text-lg font-extrabold text-blue-600">Expert</p>
-                <p className="text-[10px] text-gray-400 font-semibold uppercase">Help Needed</p>
+                <p className="text-[10px] text-gray-400 font-semibold uppercase">Help Available</p>
               </div>
             </div>
           </div>
@@ -1215,14 +1030,24 @@ export default function AuditReportPage() {
               <svg className="w-5 h-5" style={{ color: "#c4b5fd" }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
             </div>
             <h2 className="text-lg font-bold text-white mb-2">
-              {failChecks.length > 0 ? "These issues are all fixable." : "Your site is in good shape."}
+              {failChecks.length > 0 ? "These findings are all addressable." : "Your site is in good shape."}
             </h2>
             <p className="text-sm text-gray-400 leading-relaxed max-w-sm mx-auto">
               {failChecks.length > 0
-                ? `Reply to the email that brought you here. We\u2019ll show you exactly what to fix first and how long each one takes \u2014 no cost for the roadmap.`
-                : "If you want to go from good to great, reply to the email that brought you here and we\u2019ll show you how."}
+                ? `Reply to the email that brought you here. We’ll show you exactly what to address first and how long each one takes — no cost for the roadmap.`
+                : "If you want to go from good to great, reply to the email that brought you here and we’ll show you how."}
             </p>
           </div>
+        </div>
+
+        {/* Methodology — states the limits of what an external scan can conclude */}
+        <div className="mt-6 bg-white rounded-2xl border border-gray-200 p-5">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">How This Was Produced</p>
+          <p className="text-[11px] text-gray-400 leading-relaxed">
+            This report is generated automatically by analyzing {s.pagesAnalyzed && s.pagesAnalyzed > 1 ? `${s.pagesAnalyzed} publicly accessible pages` : "the publicly accessible pages"} of {data.website ? truncateUrl(data.website, 60) : "the website"}
+            {(serviceType === "web_dev" || isSeo) && s.pageSpeed ? ", together with Google PageSpeed Insights data" : ""}.
+            Where a tool or feature is described as &ldquo;not detected&rdquo;, it means we did not find evidence of it in the pages we analyzed &mdash; it does not confirm the business isn&apos;t using it. Findings are indicative and worth verifying against the business&apos;s own records.
+          </p>
         </div>
 
         {/* Footer */}

@@ -1,13 +1,27 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { URL } from "url";
-import dns from "dns/promises";
-import dnsCb from "dns";
-import http from "http";
-import https from "https";
-import net from "net";
 import logger from "../utils/logger";
 import { detectLanguage } from "../utils/languageDetection";
+import { safeHttpAgent, safeHttpsAgent, isUrlSafe, isSameSite } from "./httpClient";
+import {
+  analyzeRobotsTxt,
+  analyzeSitemap,
+  checkHttpsRedirect,
+  checkInternalLinks,
+  analyzeOnPageSeo,
+  type CrawledPage,
+} from "./seoAnalysis";
+import {
+  detectMarketingTech,
+  analyzeFormFriction,
+  analyzeCta,
+  detectLeadMagnet,
+  detectConversionPopup,
+  analyzeConversionPath,
+  analyzeSocialQuality,
+  type TechCategory,
+} from "./marketingAnalysis";
 
 export interface WebsiteData {
   title: string;
@@ -43,124 +57,113 @@ export interface WebsiteData {
   hasRetargeting: boolean;       // Any retargeting pixel beyond FB (TikTok, LinkedIn, Twitter, Pinterest)
   // Language detection
   detectedLanguage: string;      // ISO 639-3 language code detected from website content (default: "eng")
+
+  // ===== SEO analysis (see seoAnalysis.ts) =====
+  // Technical
+  hasRobotsTxt: boolean;
+  robotsBlocksSite: boolean;
+  robotsSitemapDeclared: boolean;
+  robotsBlockedPaths: string[];
+  hasSitemap: boolean;
+  sitemapUrl: string | null;
+  sitemapUrlCount: number;
+  isSitemapIndex: boolean;
+  redirectsToHttps: boolean | null;   // null = HTTP endpoint unreachable, so unknown
+  internalLinkCount: number;
+  checkedLinkCount: number;
+  brokenInternalLinks: string[];
+  redirectingInternalLinks: string[];
+  // On-page
+  titleLength: number;
+  hasTitle: boolean;
+  h1Count: number;
+  headingCounts: { h1: number; h2: number; h3: number; h4: number; h5: number; h6: number };
+  emptyHeadingCount: number;
+  hasHeadingHierarchyIssues: boolean;
+  headingIssues: string[];
+  hasCanonical: boolean;
+  canonicalUrl: string | null;
+  canonicalIssue: string | null;
+  isIndexable: boolean;
+  hasNoindex: boolean;
+  hasNofollow: boolean;
+  noindexSource: string | null;
+  imageCount: number;
+  imagesWithAlt: number;
+  imagesWithoutAlt: number;
+  emptyAltCount: number;
+  altTextCoverage: number;
+  wordCount: number;
+  isThinContent: boolean;
+  pagesAnalyzed: number;
+  duplicateTitleCount: number;
+  duplicateMetaDescriptionCount: number;
+  duplicateH1Count: number;
+  duplicateTitles: string[];
+  duplicateH1s: string[];
+  // Structured data + international
+  schemaTypes: string[];
+  hasLocalBusinessSchema: boolean;
+  hasHreflang: boolean;
+  hreflangLanguages: string[];
+  hreflangIssues: string[];
+  // Local / NAP
+  hasBusinessAddress: boolean;
+  hasVisiblePhone: boolean;
+  napConsistency: "strong" | "partial" | "weak";
+
+  // ===== Digital marketing analysis (see marketingAnalysis.ts) =====
+  marketingTechnologies: string[];
+  techByCategory: Record<TechCategory, string[]>;
+  hasClarity: boolean;
+  hasHotjar: boolean;
+  hasMicrosoftUET: boolean;
+  hasHubSpot: boolean;
+  hasTagManager: boolean;
+  hasLiveChat: boolean;
+  hasHeatmapTool: boolean;
+  formFieldCount: number;
+  requiredFieldCount: number;
+  formFriction: "low" | "medium" | "high" | null;
+  formHasPhoneRequired: boolean;
+  ctaTexts: string[];
+  primaryCTA: string | null;
+  ctaStrength: "strong" | "medium" | "weak" | null;
+  ctaAboveFold: boolean;
+  ctaCount: number;
+  competingCtas: boolean;
+  competingCtaTexts: string[];
+  hasLeadMagnet: boolean;
+  leadMagnetType: string | null;
+  hasConversionPopup: boolean;
+  popupTechnology: string | null;
+  hasClearConversionPath: boolean | null;
+  conversionPathIssues: string[];
+  conversionDestinationType: "form" | "booking" | "phone" | "email" | "none" | null;
+  socialPlatformCount: number;
+  socialPlatforms: string[];
+  socialPresenceStrength: "strong" | "moderate" | "weak";
 }
 
-// Block private/internal IPs to prevent SSRF
-function isPrivateIP(ip: string): boolean {
-  const parts = ip.split(".").map(Number);
-  if (parts.length !== 4) return true; // block anything weird
+// SSRF protection (safe agents + isUrlSafe) now lives in ./httpClient so the SEO and
+// marketing analyzers reuse the exact same guarantees instead of duplicating them.
 
-  // 10.0.0.0/8
-  if (parts[0] === 10) return true;
-  // 172.16.0.0/12
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-  // 192.168.0.0/16
-  if (parts[0] === 192 && parts[1] === 168) return true;
-  // 127.0.0.0/8 (localhost)
-  if (parts[0] === 127) return true;
-  // 169.254.0.0/16 (link-local / cloud metadata)
-  if (parts[0] === 169 && parts[1] === 254) return true;
-  // 0.0.0.0
-  if (parts.every(p => p === 0)) return true;
+// Pages fetched per lead beyond the homepage. Kept deliberately small: enrichment runs
+// 5 leads concurrently in the background, so each extra page multiplies out fast.
+const MAX_CRAWL_PAGES = 6;
+// Internal URLs status-checked for the broken-link report.
+const MAX_LINK_CHECKS = 20;
 
-  return false;
-}
-
-// Block private/internal IPv6 addresses (loopback, link-local, unique-local, and
-// IPv4-mapped forms like ::ffff:127.0.0.1 / ::ffff:169.254.x.x).
-function isBlockedIPv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  const mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mapped) return isPrivateIP(mapped[1]);
-  if (lower === "::1" || lower === "::") return true;                // loopback / unspecified
-  if (lower.startsWith("fe80:")) return true;                         // link-local
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;  // unique-local fc00::/7
-  return false;
-}
-
-// Unified check: is this resolved IP (v4 or v6) internal/disallowed?
-function isBlockedAddress(ip: string): boolean {
-  return ip.includes(":") ? isBlockedIPv6(ip) : isPrivateIP(ip);
-}
-
-// Custom DNS lookup used by our HTTP(S) agents below. It runs at socket-connect time
-// for EVERY connection — including each redirect hop — so it closes SSRF-via-redirect
-// and DNS-rebinding by validating the actual IP we're about to connect to, not just
-// the original URL string.
-function safeLookup(hostname: string, options: any, callback: any): void {
-  (dnsCb.lookup as any)(hostname, options, (err: any, address: any, family: any) => {
-    if (err) return callback(err, address, family);
-    const entries = Array.isArray(address) ? address : [{ address, family }];
-    for (const entry of entries) {
-      const ip = typeof entry === "string" ? entry : entry.address;
-      if (isBlockedAddress(ip)) {
-        return callback(new Error(`SSRF blocked: ${hostname} resolves to disallowed IP ${ip}`), address, family);
-      }
-    }
-    callback(null, address, family);
-  });
-}
-
-// HTTP(S) agents that enforce safeLookup on every connection. Reused across all
-// scraper fetches (passed as httpAgent/httpsAgent), so redirects and rebinding can't
-// reach internal addresses. Legitimate public redirects still work normally.
-const safeHttpAgent = new http.Agent();
-const safeHttpsAgent = new https.Agent();
-for (const agent of [safeHttpAgent, safeHttpsAgent]) {
-  const orig = (agent as any).createConnection.bind(agent);
-  (agent as any).createConnection = (opts: any, cb: any) => {
-    // Literal IPs skip DNS resolution entirely, so safeLookup never runs for them —
-    // validate a literal-IP host directly here (this is the primary SSRF target, e.g.
-    // a redirect to http://169.254.169.254/). Hostnames are validated by safeLookup at
-    // resolution time, which also catches DNS-rebinding.
-    const host: string = opts.host || opts.hostname || "";
-    if (host && net.isIP(host) && isBlockedAddress(host)) {
-      const err = new Error(`SSRF blocked: direct connection to disallowed IP ${host}`);
-      if (typeof cb === "function") { cb(err); return undefined; }
-      throw err;
-    }
-    return orig({ ...opts, lookup: safeLookup }, cb);
-  };
-}
-
-async function isUrlSafe(websiteUrl: string): Promise<boolean> {
-  try {
-    const parsed = new URL(websiteUrl);
-
-    // Only allow http/https
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-
-    // Block localhost hostnames
-    const hostname = parsed.hostname.toLowerCase();
-    if (hostname === "localhost" || hostname === "0.0.0.0" || hostname.endsWith(".local")) return false;
-
-    // Resolve DNS and check if it points to a private IP
-    // Check IPv4
-    try {
-      const addresses = await dns.resolve4(hostname);
-      for (const ip of addresses) {
-        if (isPrivateIP(ip)) return false;
-      }
-    } catch {
-      // No A record — check if it has only AAAA (IPv6)
-      try {
-        const ipv6Addresses = await dns.resolve6(hostname);
-        // Block loopback (::1) and link-local (fe80::) IPv6 addresses
-        for (const ip of ipv6Addresses) {
-          const lower = ip.toLowerCase();
-          if (lower === "::1" || lower.startsWith("fe80:") || lower.startsWith("fc00:") || lower.startsWith("fd")) return false;
-        }
-      } catch {
-        // Cannot resolve at all — block it
-        return false;
-      }
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
-}
+// Nav/footer paths worth crawling for SEO analysis — these are where a local business
+// puts the content that matters (services, location, about), and they're what make
+// duplicate-metadata and alt-text coverage meaningful across more than one page.
+const PRIORITY_PAGE_PATTERNS = [
+  /contact|kontakt/i,
+  /service|leistung|servicio|servizi|prestation/i,
+  /about|about-us|company|ueber|über|nosotros|chi-siamo|a-propos/i,
+  /location|standort|ubicacion|find-us|visit/i,
+  /price|pricing|tarif|preise|precio/i,
+];
 
 /**
  * Fetch and parse website content to extract business information
@@ -237,7 +240,10 @@ export async function scrapeWebsite(
 
     let finalUrl = websiteUrl; // Track the final URL after redirects (for SSL detection)
 
-    const fetchPage = async (url: string, trackFinalUrl = false): Promise<{ $: cheerio.CheerioAPI; loadTimeMs: number; sizeKB: number } | null> => {
+    const fetchPage = async (
+      url: string,
+      trackFinalUrl = false
+    ): Promise<{ $: cheerio.CheerioAPI; loadTimeMs: number; sizeKB: number; pageUrl: string; headers: Record<string, any> } | null> => {
       try {
         const startTime = Date.now();
         const response = await axios.get(url, {
@@ -254,6 +260,7 @@ export async function scrapeWebsite(
           },
         });
         const loadTimeMs = Date.now() - startTime;
+        const responseUrl: string = response.request?.res?.responseUrl || url;
         // Capture final URL after redirects (for SSL detection)
         if (trackFinalUrl && response.request?.res?.responseUrl) {
           finalUrl = response.request.res.responseUrl;
@@ -265,7 +272,13 @@ export async function scrapeWebsite(
         }
         if (typeof response.data !== "string") return null;
         const sizeKB = Math.round(Buffer.byteLength(response.data, "utf8") / 1024);
-        return { $: cheerio.load(response.data), loadTimeMs, sizeKB };
+        return {
+          $: cheerio.load(response.data),
+          loadTimeMs,
+          sizeKB,
+          pageUrl: responseUrl,
+          headers: response.headers as Record<string, any>,
+        };
       } catch {
         return null;
       }
@@ -276,31 +289,51 @@ export async function scrapeWebsite(
     if (!homeResult) return null;
     const { $, loadTimeMs: pageLoadTimeMs, sizeKB: pageSizeKB } = homeResult;
 
+    // Every page we successfully parse, in crawl order. Analyzers treat index 0 as the
+    // homepage, so it must stay first.
+    const crawledPages: CrawledPage[] = [
+      { url: homeResult.pageUrl, $, headers: homeResult.headers },
+    ];
+    const fetchedUrls = new Set<string>([websiteUrl, homeResult.pageUrl]);
+
     // Try to find and fetch the contact page from homepage navigation
     let contactPage$: cheerio.CheerioAPI | null = null;
     const baseUrl = new URL(websiteUrl);
 
-    // Collect internal links from nav and footer (where contact pages are always linked)
+    // Collect internal links from nav and footer (where contact pages are always linked).
+    // Compare hosts with isSameSite: a site requested as www.example.com that
+    // canonicalises to example.com would otherwise treat all of its own links as
+    // external and never crawl a second page.
     const navFooterLinks: string[] = [];
-    $("nav a[href], header a[href], footer a[href]").each((_i: number, el: any) => {
-      const href = $(el).attr("href");
-      if (!href) return;
-      try {
-        const resolved = new URL(href, baseUrl);
-        // Only same-domain, short internal paths (skip external, anchors, deep paths, assets)
-        if (resolved.hostname !== baseUrl.hostname) return;
-        const path = resolved.pathname;
-        if (path === "/" || path === baseUrl.pathname) return;
-        // Skip file extensions (images, PDFs, etc.)
-        if (/\.\w{2,4}$/.test(path) && !/\.html?$/.test(path)) return;
-        // Only short paths (1-2 segments) — contact pages are top-level, not /blog/some-post
-        const segments = path.split("/").filter(Boolean);
-        if (segments.length > 2) return;
-        if (!navFooterLinks.includes(resolved.toString())) {
-          navFooterLinks.push(resolved.toString());
-        }
-      } catch { /* ignore bad URLs */ }
-    });
+    const collectLinks = (selector: string) => {
+      $(selector).each((_i: number, el: any) => {
+        const href = $(el).attr("href");
+        if (!href) return;
+        try {
+          const resolved = new URL(href, homeResult.pageUrl);
+          // Only same-domain, short internal paths (skip external, anchors, deep paths, assets)
+          if (!isSameSite(resolved.hostname, baseUrl.hostname)) return;
+          const path = resolved.pathname;
+          if (path === "/" || path === baseUrl.pathname) return;
+          // Skip file extensions (images, PDFs, etc.)
+          if (/\.\w{2,4}$/.test(path) && !/\.html?$/.test(path)) return;
+          // Only short paths (1-2 segments) — contact pages are top-level, not /blog/some-post
+          const segments = path.split("/").filter(Boolean);
+          if (segments.length > 2) return;
+          const normalized = resolved.toString();
+          if (!navFooterLinks.includes(normalized)) navFooterLinks.push(normalized);
+        } catch { /* ignore bad URLs */ }
+      });
+    };
+
+    collectLinks("nav a[href], header a[href], footer a[href]");
+
+    // Fallback for sites that don't use semantic nav/header/footer elements (common on
+    // page-builder templates). Without this they'd never get a second page crawled, which
+    // silently disables duplicate-metadata and internal-link analysis for them.
+    if (navFooterLinks.length === 0) {
+      collectLinks("a[href]");
+    }
 
     // Quick check: "contact" and "kontakt" roots cover ~90% of languages
     // ("contact" matches: English, Spanish contacto, Portuguese contato, Italian contatti, French contactez)
@@ -312,7 +345,12 @@ export async function scrapeWebsite(
       const contactSafe = await isUrlSafe(quickContactMatch);
       if (contactSafe) {
         const result = await fetchPage(quickContactMatch);
-        if (result) contactPage$ = result.$;
+        if (result) {
+          contactPage$ = result.$;
+          crawledPages.push({ url: result.pageUrl, $: result.$, headers: result.headers });
+          fetchedUrls.add(quickContactMatch);
+          fetchedUrls.add(result.pageUrl);
+        }
       }
     }
 
@@ -326,6 +364,11 @@ export async function scrapeWebsite(
         const result = await fetchPage(candidateUrl);
         if (!result) continue;
         const candidate$ = result.$;
+        // Every page we fetch feeds the SEO analysis, even if it turns out not to be the
+        // contact page — so record it before deciding.
+        crawledPages.push({ url: result.pageUrl, $: candidate$, headers: result.headers });
+        fetchedUrls.add(candidateUrl);
+        fetchedUrls.add(result.pageUrl);
         // Check if this page has a contact form (email input + textarea) or mailto link
         const hasForm = candidate$("form").toArray().some(form => {
           const html = candidate$(form).html()?.toLowerCase() || "";
@@ -339,9 +382,34 @@ export async function scrapeWebsite(
       }
     }
 
-    // Merge data from homepage + contact page
-    const pages = [$];
-    if (contactPage$) pages.push(contactPage$);
+    // Crawl a few more high-value pages (services, about, location, pricing). These make
+    // the SEO analysis meaningful — duplicate metadata, alt-text coverage and internal
+    // link health can't be judged from a single page — and they surface contact details
+    // the homepage doesn't carry. Hard-capped by MAX_CRAWL_PAGES.
+    const priorityCandidates = navFooterLinks.filter(
+      (url) => !fetchedUrls.has(url) && PRIORITY_PAGE_PATTERNS.some((re) => re.test(url))
+    );
+    // Fall back to any remaining nav link so single-page-nav sites still get a second page.
+    const extraCandidates = [
+      ...priorityCandidates,
+      ...navFooterLinks.filter((url) => !fetchedUrls.has(url) && !priorityCandidates.includes(url)),
+    ];
+
+    for (const candidateUrl of extraCandidates) {
+      if (crawledPages.length >= MAX_CRAWL_PAGES) break;
+      if (fetchedUrls.has(candidateUrl)) continue;
+      if (!(await isUrlSafe(candidateUrl))) continue;
+      fetchedUrls.add(candidateUrl);
+      const result = await fetchPage(candidateUrl);
+      if (!result) continue;
+      // A redirect can land two nav links on the same page — don't analyse it twice.
+      if (fetchedUrls.has(result.pageUrl) && result.pageUrl !== candidateUrl) continue;
+      fetchedUrls.add(result.pageUrl);
+      crawledPages.push({ url: result.pageUrl, $: result.$, headers: result.headers });
+    }
+
+    // Merge data from every crawled page (homepage first)
+    const pages = crawledPages.map((p) => p.$);
 
     // Extract title and meta description (homepage only)
     const title = $("title").text() || $("h1").first().text() || "";
@@ -909,6 +977,34 @@ export async function scrapeWebsite(
     // Detect the dominant language from the visible page text
     const detectedLanguage = await detectLanguage(allPageText);
 
+    // ===== DEEP SEO ANALYSIS =====
+    // Pure parsing of the pages we already have — no extra requests.
+    const onPage = analyzeOnPageSeo(crawledPages, finalUrl, phones);
+
+    // Three cheap network checks (robots.txt, sitemap, http:// probe) run together.
+    // Each resolves to a safe default on failure so one slow host can't fail enrichment.
+    const origin = `${baseUrl.protocol}//${baseUrl.host}`;
+    const robots = await analyzeRobotsTxt(origin);
+    const [sitemap, redirectsToHttps] = await Promise.all([
+      analyzeSitemap(origin, robots.sitemapUrls),
+      checkHttpsRedirect(baseUrl.hostname),
+    ]);
+
+    // Capped link-health sweep. Skipped entirely for parked domains — there's nothing
+    // meaningful to check and it would just burn requests.
+    const linkHealth = isParkedDomain
+      ? { internalLinkCount: 0, checkedLinkCount: 0, brokenInternalLinks: [], redirectingInternalLinks: [] }
+      : await checkInternalLinks(crawledPages, baseUrl, [...fetchedUrls], MAX_LINK_CHECKS);
+
+    // ===== DEEP MARKETING ANALYSIS =====
+    const tech = detectMarketingTech(allHtml);
+    const formFriction = analyzeFormFriction(crawledPages);
+    const cta = analyzeCta($, finalUrl);
+    const leadMagnet = detectLeadMagnet(allPageText, allHtml);
+    const popup = detectConversionPopup(crawledPages, tech);
+    const social = analyzeSocialQuality(socialLinks);
+    const conversionPath = await analyzeConversionPath(cta, crawledPages, baseUrl.hostname);
+
     return {
       title: title.slice(0, 200),
       description: description.slice(0, 500),
@@ -939,6 +1035,88 @@ export async function scrapeWebsite(
       hasCTA,
       hasRetargeting,
       detectedLanguage,
+
+      // ===== SEO =====
+      hasRobotsTxt: robots.hasRobotsTxt,
+      robotsBlocksSite: robots.robotsBlocksSite,
+      robotsSitemapDeclared: robots.robotsSitemapDeclared,
+      robotsBlockedPaths: robots.robotsBlockedPaths,
+      hasSitemap: sitemap.hasSitemap,
+      sitemapUrl: sitemap.sitemapUrl,
+      sitemapUrlCount: sitemap.sitemapUrlCount,
+      isSitemapIndex: sitemap.isSitemapIndex,
+      redirectsToHttps,
+      internalLinkCount: linkHealth.internalLinkCount,
+      checkedLinkCount: linkHealth.checkedLinkCount,
+      brokenInternalLinks: linkHealth.brokenInternalLinks,
+      redirectingInternalLinks: linkHealth.redirectingInternalLinks,
+      titleLength: onPage.titleLength,
+      hasTitle: onPage.hasTitle,
+      h1Count: onPage.h1Count,
+      headingCounts: onPage.headingCounts,
+      emptyHeadingCount: onPage.emptyHeadingCount,
+      hasHeadingHierarchyIssues: onPage.hasHeadingHierarchyIssues,
+      headingIssues: onPage.headingIssues,
+      hasCanonical: onPage.hasCanonical,
+      canonicalUrl: onPage.canonicalUrl,
+      canonicalIssue: onPage.canonicalIssue,
+      isIndexable: onPage.isIndexable,
+      hasNoindex: onPage.hasNoindex,
+      hasNofollow: onPage.hasNofollow,
+      noindexSource: onPage.noindexSource,
+      imageCount: onPage.imageCount,
+      imagesWithAlt: onPage.imagesWithAlt,
+      imagesWithoutAlt: onPage.imagesWithoutAlt,
+      emptyAltCount: onPage.emptyAltCount,
+      altTextCoverage: onPage.altTextCoverage,
+      wordCount: onPage.wordCount,
+      isThinContent: onPage.isThinContent,
+      pagesAnalyzed: onPage.pagesAnalyzed,
+      duplicateTitleCount: onPage.duplicateTitleCount,
+      duplicateMetaDescriptionCount: onPage.duplicateMetaDescriptionCount,
+      duplicateH1Count: onPage.duplicateH1Count,
+      duplicateTitles: onPage.duplicateTitles,
+      duplicateH1s: onPage.duplicateH1s,
+      schemaTypes: onPage.schemaTypes,
+      hasLocalBusinessSchema: onPage.hasLocalBusinessSchema,
+      hasHreflang: onPage.hasHreflang,
+      hreflangLanguages: onPage.hreflangLanguages,
+      hreflangIssues: onPage.hreflangIssues,
+      hasBusinessAddress: onPage.hasBusinessAddress,
+      hasVisiblePhone: onPage.hasVisiblePhone,
+      napConsistency: onPage.napConsistency,
+
+      // ===== MARKETING =====
+      marketingTechnologies: tech.marketingTechnologies,
+      techByCategory: tech.techByCategory,
+      hasClarity: tech.hasClarity,
+      hasHotjar: tech.hasHotjar,
+      hasMicrosoftUET: tech.hasMicrosoftUET,
+      hasHubSpot: tech.hasHubSpot,
+      hasTagManager: tech.hasTagManager,
+      hasLiveChat: tech.hasLiveChat,
+      hasHeatmapTool: tech.hasHeatmapTool,
+      formFieldCount: formFriction.formFieldCount,
+      requiredFieldCount: formFriction.requiredFieldCount,
+      formFriction: formFriction.formFriction,
+      formHasPhoneRequired: formFriction.formHasPhoneRequired,
+      ctaTexts: cta.ctaTexts,
+      primaryCTA: cta.primaryCTA,
+      ctaStrength: cta.ctaStrength,
+      ctaAboveFold: cta.ctaAboveFold,
+      ctaCount: cta.ctaCount,
+      competingCtas: cta.competingCtas,
+      competingCtaTexts: cta.competingCtaTexts,
+      hasLeadMagnet: leadMagnet.hasLeadMagnet,
+      leadMagnetType: leadMagnet.leadMagnetType,
+      hasConversionPopup: popup.hasConversionPopup,
+      popupTechnology: popup.popupTechnology,
+      hasClearConversionPath: conversionPath.hasClearConversionPath,
+      conversionPathIssues: conversionPath.conversionPathIssues,
+      conversionDestinationType: conversionPath.conversionDestinationType,
+      socialPlatformCount: social.socialPlatformCount,
+      socialPlatforms: social.socialPlatforms,
+      socialPresenceStrength: social.socialPresenceStrength,
     };
   } catch (error) {
     logger.error(

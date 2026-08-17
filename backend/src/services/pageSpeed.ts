@@ -1,6 +1,22 @@
 import axios from "axios";
 import logger from "../utils/logger";
 
+/**
+ * A single failed Lighthouse audit, carried through to the report.
+ *
+ * We already pay for the full Lighthouse run to get the five headline numbers, and the
+ * response contains Google's own per-check verdict on titles, meta descriptions, alt
+ * text, crawlability, hreflang, canonical tags, contrast and tap targets. Keeping those
+ * costs nothing extra and is far more credible in a prospect-facing report than our own
+ * regex conclusions.
+ */
+export interface LighthouseAuditFinding {
+  id: string;
+  title: string;
+  score: number | null;
+  displayValue?: string;
+}
+
 export interface PageSpeedMetrics {
   performanceScore: number;       // 0-100
   accessibilityScore: number;     // 0-100
@@ -11,6 +27,9 @@ export interface PageSpeedMetrics {
   totalBlockingTime: number;      // ms
   cumulativeLayoutShift: number;  // score (0-1)
   speedIndex: number;             // ms
+  // Failed sub-audits from the same response (no extra API call)
+  seoIssues?: LighthouseAuditFinding[];
+  accessibilityIssues?: LighthouseAuditFinding[];
 }
 
 export interface PageSpeedResult {
@@ -57,7 +76,35 @@ async function fetchScore(url: string, strategy: "mobile" | "desktop"): Promise<
 
     const audits = lighthouse.audits || {};
 
+    // Pull the FAILED audits out of a category, ordered by Lighthouse's own weighting so
+    // the most consequential issue leads. `auditRefs` is used rather than a hard-coded id
+    // list so this keeps working as Google adds or renames checks.
+    const failedAuditsFor = (categoryKey: string): LighthouseAuditFinding[] => {
+      const refs = cats[categoryKey]?.auditRefs;
+      if (!Array.isArray(refs)) return [];
+      const failures: (LighthouseAuditFinding & { weight: number })[] = [];
+      for (const ref of refs) {
+        const audit = audits[ref?.id];
+        if (!audit) continue;
+        // score === null means "informative" or "not applicable" — not a failure.
+        if (typeof audit.score !== "number" || audit.score >= 1) continue;
+        failures.push({
+          id: String(ref.id),
+          title: String(audit.title || ref.id),
+          score: audit.score,
+          ...(audit.displayValue ? { displayValue: String(audit.displayValue) } : {}),
+          weight: typeof ref.weight === "number" ? ref.weight : 0,
+        });
+      }
+      return failures
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 10)
+        .map(({ weight, ...rest }) => rest);
+    };
+
     return {
+      seoIssues: failedAuditsFor("seo"),
+      accessibilityIssues: failedAuditsFor("accessibility"),
       performanceScore: Math.round(perfScore * 100),
       accessibilityScore: Math.round((cats.accessibility?.score ?? 0) * 100),
       bestPracticesScore: Math.round((cats["best-practices"]?.score ?? 0) * 100),
