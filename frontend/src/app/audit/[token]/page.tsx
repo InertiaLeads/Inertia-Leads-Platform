@@ -15,18 +15,18 @@ import { buildSeoChecks } from "./checks/seo";
 import { buildMarketingChecks } from "./checks/marketing";
 import { buildWebDevChecks } from "./checks/webDev";
 
-function ScoreRing({ score }: { score: number }) {
-  const healthScore = Math.max(0, Math.min(100, 100 - score));
-  const grade =
-    healthScore >= 80 ? "A" : healthScore >= 60 ? "B" : healthScore >= 40 ? "C" : healthScore >= 20 ? "D" : "F";
-  const color =
-    healthScore <= 30 ? "#ef4444" : healthScore <= 60 ? "#f59e0b" : "#10b981";
-  const label =
-    healthScore <= 30
-      ? "Needs Immediate Attention"
-      : healthScore <= 60
-      ? "Room for Improvement"
-      : "Looking Good";
+// Bands deliberately match Google Lighthouse's own convention — red below 50, amber 50–89,
+// green 90+ — so a reader who checks their site at pagespeed.web.dev sees the same colour
+// language we do. Inventing our own thresholds would be one more thing to argue about.
+export function scoreBand(score: number): { color: string; label: string; grade: string } {
+  if (score >= 90) return { color: "#10b981", label: "Strong Position", grade: "A" };
+  if (score >= 75) return { color: "#f59e0b", label: "Room for Improvement", grade: "B" };
+  if (score >= 60) return { color: "#f59e0b", label: "Falling Behind", grade: "C" };
+  return { color: "#ef4444", label: "Needs Immediate Attention", grade: "F" };
+}
+
+function ScoreRing({ healthScore }: { healthScore: number }) {
+  const { color, label, grade } = scoreBand(healthScore);
 
   const r = 58;
   const circ = 2 * Math.PI * r;
@@ -416,6 +416,76 @@ function SeoSnapshotPanel({ s }: { s: AuditSignals }) {
   );
 }
 
+/**
+ * Website snapshot — the web-dev counterpart to SEO's Technical Snapshot.
+ *
+ * The web-dev report was the only one of the three with no at-a-glance panel, which made it
+ * read as the thinnest even once it had 13 findings. Every tile here is a raw measurement
+ * taken during the crawl, chosen for what a developer would actually be asked to fix.
+ */
+function WebsiteSnapshotPanel({ s }: { s: AuditSignals }) {
+  const tiles: { label: string; value: string; tone: "good" | "bad" | "neutral" }[] = [];
+
+  if (s.pagesAnalyzed !== null) tiles.push({ label: "Pages Analyzed", value: String(s.pagesAnalyzed), tone: "neutral" });
+  if (s.hasSSL !== null) tiles.push({ label: "SSL", value: s.hasSSL ? "Active" : "Missing", tone: s.hasSSL ? "good" : "bad" });
+  if (s.redirectsToHttps !== null) tiles.push({ label: "HTTP → HTTPS", value: s.redirectsToHttps ? "Redirects" : "No redirect", tone: s.redirectsToHttps ? "good" : "bad" });
+  if (s.isMobileFriendly !== null) tiles.push({ label: "Mobile Viewport", value: s.isMobileFriendly ? "Set" : "Missing", tone: s.isMobileFriendly ? "good" : "bad" });
+  if (s.pageSizeKB !== null && s.pageSizeKB > 0) {
+    tiles.push({
+      label: "Homepage Weight",
+      value: s.pageSizeKB > 1024 ? `${(s.pageSizeKB / 1024).toFixed(1)} MB` : `${s.pageSizeKB} KB`,
+      tone: s.pageSizeKB > 2048 ? "bad" : "good",
+    });
+  }
+  if (s.pageSpeed?.mobile) {
+    tiles.push({
+      label: "Content Appears",
+      value: `${(s.pageSpeed.mobile.largestContentfulPaint / 1000).toFixed(1)}s`,
+      tone: s.pageSpeed.mobile.largestContentfulPaint > 2500 ? "bad" : "good",
+    });
+  } else if (s.pageLoadTimeMs !== null) {
+    tiles.push({ label: "Server Response", value: `${(s.pageLoadTimeMs / 1000).toFixed(1)}s`, tone: s.pageLoadTimeMs > 3000 ? "bad" : "good" });
+  }
+  if (s.checkedLinkCount !== null && s.checkedLinkCount > 0) {
+    tiles.push({
+      label: "Broken Links",
+      value: `${s.brokenInternalLinks.length}/${s.checkedLinkCount}`,
+      tone: s.brokenInternalLinks.length === 0 ? "good" : "bad",
+    });
+  }
+  if (s.altTextCoverage !== null && (s.imageCount ?? 0) > 0) {
+    tiles.push({ label: "Image Alt Text", value: `${s.altTextCoverage}%`, tone: s.altTextCoverage >= 80 ? "good" : "bad" });
+  }
+  if (s.pageSpeed?.mobile) {
+    tiles.push({ label: "Accessibility", value: `${s.pageSpeed.mobile.accessibilityScore}/100`, tone: s.pageSpeed.mobile.accessibilityScore >= 90 ? "good" : "bad" });
+    tiles.push({ label: "Layout Shift", value: s.pageSpeed.mobile.cumulativeLayoutShift.toFixed(2), tone: s.pageSpeed.mobile.cumulativeLayoutShift > 0.1 ? "bad" : "good" });
+  }
+  if (s.hasContactForm !== null && !s.isSPA) tiles.push({ label: "Contact Form", value: s.hasContactForm ? "Found" : "None", tone: s.hasContactForm ? "good" : "bad" });
+  if (s.hasOnlineBooking !== null && !s.isSPA) tiles.push({ label: "Online Booking", value: s.hasOnlineBooking ? "Found" : "None", tone: s.hasOnlineBooking ? "good" : "bad" });
+
+  if (tiles.length < 4) return null;
+
+  return (
+    <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+      <p className="text-sm font-bold text-gray-900 mb-1">Website Snapshot</p>
+      <p className="text-xs text-gray-400 mb-4">Measured directly from the site during this analysis</p>
+      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+        {tiles.map((t) => <StatTile key={t.label} {...t} />)}
+      </div>
+      {s.technologies.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-100">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Platform &amp; Technologies Detected</p>
+          <div className="flex flex-wrap gap-1.5">
+            {s.technologies.slice(0, 12).map((t) => (
+              <span key={t} className="px-2 py-1 rounded-md text-[11px] font-semibold bg-violet-50 text-violet-700 ring-1 ring-violet-200">{t}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ===== Marketing technology inventory =====
 function MarketingStackPanel({ s }: { s: AuditSignals }) {
   const tech = s.marketingTechnologies;
@@ -440,21 +510,64 @@ export default function AuditReportPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  /*
+    Load the report, then keep asking until Google's numbers arrive.
+
+    A Lighthouse pair takes 30–90s and is deliberately never awaited inside a request, so the
+    first response for a fresh report legitimately has no `pageSpeed`. A single fetch therefore
+    rendered a report with no gauges, no Core Web Vitals and a composite score missing its
+    performance components — indistinguishable, to the reader, from the feature being broken.
+
+    So: poll while the server says a run is in flight. The interval is long because the work is
+    long; the cap exists so a stuck run can't leave the tab requesting forever. Each poll
+    replaces the whole payload, which is safe — every field is server-derived.
+  */
   useEffect(() => {
     if (!token) return;
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-    fetch(`${apiUrl}/audit/${token}`)
-      .then((res) => {
-        if (!res.ok) throw new Error("Report not found");
-        return res.json();
-      })
-      .then((d) => {
-        setData(d);
-        // Track view (fire-and-forget — don't block page render)
-        fetch(`${apiUrl}/audit/${token}/view`, { method: "POST", headers: { "Content-Type": "application/json" } }).catch(() => {});
-      })
-      .catch(() => setError("This audit report was not found or has expired."))
-      .finally(() => setLoading(false));
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const POLL_MS = 8000;
+    // ~5 minutes. Measured against the live Google API a four-category run takes 30–95s, and
+    // a strategy that times out is retried once — so the realistic worst case is well past
+    // three minutes. The cap only exists so a wedged run can't leave the tab polling forever.
+    const MAX_POLLS = 38;
+
+    const load = (attempt: number) => {
+      fetch(`${apiUrl}/audit/${token}`)
+        .then((res) => {
+          if (!res.ok) throw new Error("Report not found");
+          return res.json();
+        })
+        .then((d: AuditData) => {
+          if (cancelled) return;
+          setData(d);
+          setLoading(false);
+
+          if (attempt === 0) {
+            // Track view (fire-and-forget — don't block page render)
+            fetch(`${apiUrl}/audit/${token}/view`, { method: "POST", headers: { "Content-Type": "application/json" } }).catch(() => {});
+          }
+
+          const stillWaiting = d.pageSpeedPending && !d.signals?.pageSpeed;
+          if (stillWaiting && attempt < MAX_POLLS) {
+            timer = setTimeout(() => load(attempt + 1), POLL_MS);
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // A failed POLL must not blow away a report that already rendered.
+          if (attempt === 0) setError("This audit report was not found or has expired.");
+          setLoading(false);
+        });
+    };
+
+    load(0);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [token]);
 
   const [loadingSlow, setLoadingSlow] = useState(false);
@@ -524,16 +637,107 @@ export default function AuditReportPage() {
     .filter((c) => c.status !== "good")
     .sort((a, b) => b.severity - a.severity);
 
-  const healthScore = Math.max(0, Math.min(100, 100 - data.score));
-  const benchmark = data.benchmark ?? null;
-  const industryAvg = benchmark ? benchmark.avgHealth : null;
+  // ===== Health score =====
+  // Derived from the checks THIS report actually renders, weighted by each check's severity.
+  //
+  // It used to be `100 - lead.score`, where lead.score is the internal sales-opportunity
+  // score. That number rewards a business looking easy to sell to (+20 for running
+  // WordPress, +25 for no booking widget, +5 for having under 10 Google reviews), it
+  // saturates at 100 so healthy sites rendered as 0/100 "F", and it is identical for all
+  // three service types — an SEO report was scored on web-dev signals. The result was a
+  // report that argued with itself: "20 of 21 checks passed" above a red F.
+  //
+  // Now: every rendered check contributes its severity to the denominator and, if it failed,
+  // to the deduction. The score can only disagree with the list if the list is wrong.
+  // Our own checks, severity-weighted, with continuous measures counted proportionally.
+  const checksScore = (() => {
+    const weighted = checks.filter((c) => c.severity > 0 && !c.excludeFromScore);
+    if (weighted.length === 0) return null;
+    const total = weighted.reduce((sum, c) => sum + c.severity, 0);
+    const earned = weighted.reduce((sum, c) => {
+      const ratio = c.ratio !== undefined ? Math.max(0, Math.min(1, c.ratio)) : c.status === "good" ? 1 : 0;
+      return sum + c.severity * ratio;
+    }, 0);
+    return Math.round(100 * (earned / total));
+  })();
 
-  // Impact estimate counts only materially significant findings, and caps the basis.
-  // With ~25 checks per report, multiplying every failing check would produce a figure
-  // large enough to read as invented.
-  const impactBasis = Math.min(8, failChecks.filter((c) => c.severity >= 2).length);
-  const estimatedLossMin = impactBasis * 8;
-  const estimatedLossMax = impactBasis * 15;
+  // ===== Composite score =====
+  // Lighthouse carries real weight here for one reason: those are Google's numbers, published
+  // at pagespeed.web.dev, and a reader can reproduce them in ten seconds. Our own checks are
+  // mostly technical hygiene that any competently built site passes, which is why a
+  // checks-only score clustered in the 90s and told the reader nothing worth acting on.
+  //
+  // The weights are NOT tuned to force a low result. They are set by how much each component
+  // reflects whether the site earns the business enquiries, and the arithmetic is printed
+  // under the ring so the reader can audit it. Typical small-business sites land in the 45–70
+  // band because mobile performance across that market genuinely is poor; a genuinely good
+  // site still scores 90+.
+  const lhMobile = s.pageSpeed?.mobile;
+  const lhDesktop = s.pageSpeed?.desktop;
+  const lhQuality = lhMobile
+    ? Math.round((lhMobile.seoScore + lhMobile.accessibilityScore + lhMobile.bestPracticesScore) / 3)
+    : null;
+
+  const scoreComponents: { key: string; label: string; value: number; weight: number; note: string }[] = [];
+  if (checksScore !== null) {
+    scoreComponents.push({
+      key: "checks",
+      label: isMarketing ? "Marketing setup checks" : isSeo ? "SEO checks" : "Website checks",
+      value: checksScore,
+      weight: isMarketing ? 0.7 : 0.45,
+      note: `${checks.filter((c) => !c.excludeFromScore).length} checks on this site`,
+    });
+  }
+  if (lhMobile) {
+    scoreComponents.push({
+      key: "lh-mobile",
+      label: "Google mobile performance",
+      value: lhMobile.performanceScore,
+      weight: isMarketing ? 0.2 : 0.3,
+      note: "Lighthouse, mobile",
+    });
+  }
+  if (lhDesktop) {
+    scoreComponents.push({
+      key: "lh-desktop",
+      label: "Google desktop performance",
+      value: lhDesktop.performanceScore,
+      weight: 0.1,
+      note: "Lighthouse, desktop",
+    });
+  }
+  if (lhQuality !== null && !isMarketing) {
+    scoreComponents.push({
+      key: "lh-quality",
+      label: "Google SEO, accessibility & best practices",
+      value: lhQuality,
+      weight: 0.15,
+      note: "Lighthouse average",
+    });
+  }
+
+  // How many checks actually contributed. A score built on one or two measurements is not a
+  // score — a lead with almost no stored signals would otherwise render "0/100 · F · Needs
+  // Immediate Attention" off the back of a single failed check, which is precisely the kind of
+  // unsupported verdict this report is not allowed to make.
+  const scoredCheckCount = checks.filter((c) => c.severity > 0 && !c.excludeFromScore).length;
+  const MIN_CHECKS_TO_SCORE = 6;
+  const hasEnoughToScore = scoredCheckCount >= MIN_CHECKS_TO_SCORE;
+
+  const healthScore = (() => {
+    // A site we could not reach, or one that is genuinely parked, has no meaningful checks to
+    // score; the banner above the ring carries that message and the score stays low.
+    if (s._siteDown || s.isParkedDomain) return 10;
+    if (scoreComponents.length === 0) return Math.max(0, Math.min(100, 100 - data.score));
+    // Renormalise across whatever components exist, so a lead without Lighthouse data isn't
+    // silently penalised for our missing measurement.
+    const weightSum = scoreComponents.reduce((sum, c) => sum + c.weight, 0);
+    const composite = scoreComponents.reduce((sum, c) => sum + c.value * (c.weight / weightSum), 0);
+    return Math.max(0, Math.min(100, Math.round(composite)));
+  })();
+
+  const localMarket = data.localMarket ?? null;
+  const myReviews = s.googleReviewCount ?? 0;
 
   const issuesHeading = showCategories ? "What Needs Attention" : "What Needs Fixing";
 
@@ -642,8 +846,52 @@ export default function AuditReportPage() {
                 ? "SEO Health Score"
                 : "Digital Health Score"}
             </p>
-            <ScoreRing score={data.score} />
+            {hasEnoughToScore ? (
+              <ScoreRing healthScore={healthScore} />
+            ) : (
+              <div className="text-center max-w-sm">
+                <p className="text-2xl font-extrabold text-gray-400">Not enough data</p>
+                <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                  Only {scoredCheckCount} {scoredCheckCount === 1 ? "measurement" : "measurements"} could be taken from this site, which is too few to give it a fair score. The individual findings below are still accurate.
+                </p>
+              </div>
+            )}
           </div>
+
+          {/*
+            How the score is built. This is not decoration — a composite of 63 sitting above
+            "18 of 21 checks passed" reads as a contradiction unless the reader can see that
+            Google rates mobile performance at 38 and that it carries 30% of the weight. Every
+            row here is a number the reader can reproduce themselves.
+          */}
+          {hasEnoughToScore && scoreComponents.length > 1 && (
+            <div className="border-t border-gray-100 px-6 py-5">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">How this score is calculated</p>
+              <div className="space-y-2.5">
+                {scoreComponents.map((c) => {
+                  const band = scoreBand(c.value);
+                  return (
+                    <div key={c.key} className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-xs font-semibold text-gray-700 truncate">{c.label}</span>
+                          <span className="text-xs font-bold tabular-nums" style={{ color: band.color }}>{c.value}<span className="text-gray-400 font-medium">/100</span></span>
+                        </div>
+                        <div className="mt-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${c.value}%`, backgroundColor: band.color }} />
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-bold text-gray-400 tabular-nums w-9 text-right">{Math.round(c.weight * 100)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-3 leading-relaxed">
+                Percentages show how much each component contributes. Performance figures come from Google Lighthouse and can be reproduced at pagespeed.web.dev.
+              </p>
+            </div>
+          )}
+
           <div className="border-t border-gray-100 bg-gray-50/80 px-6 py-4">
             <div className="grid grid-cols-3 divide-x divide-gray-200 text-center">
               <div className="px-2">
@@ -668,8 +916,28 @@ export default function AuditReportPage() {
         {/* Technical snapshot — SEO only */}
         {isSeo && <SeoSnapshotPanel s={s} />}
 
-        {/* Google Lighthouse Score — only for web_dev and seo */}
-        {(serviceType === "web_dev" || isSeo) && s.pageSpeed && (s.pageSpeed.mobile || s.pageSpeed.desktop) && (
+        {/* Web dev had no at-a-glance panel at all — this is its equivalent. */}
+        {!isSeo && !isMarketing && <WebsiteSnapshotPanel s={s} />}
+
+        {/*
+          Lighthouse is still running. Shown INSTEAD of silently omitting the section, because
+          an absent Performance panel reads as "they didn't check" rather than "the numbers are
+          thirty seconds away". The page polls and swaps this for the real gauges.
+        */}
+        {data.pageSpeedPending && !(s.pageSpeed?.mobile || s.pageSpeed?.desktop) && (
+          <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6 flex items-center gap-4">
+            <div className="w-8 h-8 border-[3px] border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+            <div>
+              <p className="text-sm font-bold text-gray-900">Measuring performance with Google Lighthouse&hellip;</p>
+              <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                Google is loading {data.company}&rsquo;s site on a simulated mobile connection. This takes up to a minute and will appear here automatically.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Google Lighthouse Score — shown for all three report types */}
+        {s.pageSpeed && (s.pageSpeed.mobile || s.pageSpeed.desktop) && (
           <div className="mt-6">
             {/* Section Header */}
             <div className="flex items-center gap-2.5 mb-4">
@@ -848,55 +1116,132 @@ export default function AuditReportPage() {
         {/* Tracking stack — digital marketing only */}
         {isMarketing && <TrackingStackPanel s={s} />}
 
-        {/* How You Compare — only shown when we have a real benchmark */}
-        {benchmark && industryAvg !== null && (
+        {/*
+          The "How You Compare" benchmark and the "Estimated Monthly Impact" range both used to
+          sit here. Removed deliberately:
+
+          * The benchmark averaged `100 - opportunity_score` across our own prospect list — a
+            set selected BECAUSE those businesses looked weak — and called it "the average
+            business". It also can no longer be compared to the score above, which is now
+            derived from this report's own checks rather than that scale.
+          * The impact range was `min(8, significant findings) x 8` to `x 15`. We hold no
+            traffic data for these sites, so it was arithmetic on our own check count printed
+            as a revenue forecast — the single least defensible number in the report.
+
+          What replaces them is a breakdown of the findings we can actually stand behind.
+        */}
+        {/*
+          Local market position. Replaces the removed "average business" benchmark with the
+          real thing: Google's own review counts for the other businesses in the same trade
+          and the same city, from the same searches that found this one. A business owner can
+          verify every figure by searching their own trade in their own town, and the peers
+          are competitors they know by name — which is why this lands harder than any score.
+        */}
+        {localMarket && localMarket.peerCount >= 5 && (
           <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-            <p className="text-sm font-bold text-gray-900 mb-4">How You Compare</p>
-            <div className="space-y-3">
+            <p className="text-sm font-bold text-gray-900">Your Position in {localMarket.location}</p>
+            <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+              Compared with {localMarket.peerCount} other {localMarket.niche.toLowerCase()} businesses in {localMarket.location}, using Google review data.
+            </p>
+
+            <div className="mt-4 space-y-3">
               <div>
                 <div className="flex justify-between items-center mb-1.5">
-                  <span className="text-xs font-semibold text-gray-700">Your Score</span>
-                  <span className="text-xs font-bold" style={{ color: healthScore <= 30 ? '#ef4444' : healthScore <= 60 ? '#f59e0b' : '#10b981' }}>{healthScore}/100</span>
+                  <span className="text-xs font-semibold text-gray-700">Your Google reviews</span>
+                  <span className="text-xs font-bold tabular-nums" style={{ color: myReviews < localMarket.avgReviews ? "#ef4444" : "#10b981" }}>{myReviews}</span>
                 </div>
                 <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-1000" style={{ width: `${healthScore}%`, backgroundColor: healthScore <= 30 ? '#ef4444' : healthScore <= 60 ? '#f59e0b' : '#10b981' }} />
+                  <div className="h-full rounded-full" style={{ width: `${Math.min(100, (myReviews / Math.max(1, localMarket.topReviews)) * 100)}%`, backgroundColor: myReviews < localMarket.avgReviews ? "#ef4444" : "#10b981" }} />
                 </div>
               </div>
               <div>
                 <div className="flex justify-between items-center mb-1.5">
-                  <span className="text-xs font-semibold text-gray-500">{benchmark.scope === "industry" ? `Average ${benchmark.label}` : "Average business"}</span>
-                  <span className="text-xs font-bold text-gray-400">{industryAvg}/100</span>
+                  <span className="text-xs font-semibold text-gray-500">Local average</span>
+                  <span className="text-xs font-bold text-gray-400 tabular-nums">{localMarket.avgReviews}</span>
                 </div>
                 <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full bg-gray-300 transition-all duration-1000" style={{ width: `${industryAvg}%` }} />
+                  <div className="h-full rounded-full bg-gray-300" style={{ width: `${Math.min(100, (localMarket.avgReviews / Math.max(1, localMarket.topReviews)) * 100)}%` }} />
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs font-semibold text-gray-500">Best in {localMarket.location}</span>
+                  <span className="text-xs font-bold text-gray-400 tabular-nums">{localMarket.topReviews}</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-gray-400 w-full" />
                 </div>
               </div>
             </div>
-            {healthScore < industryAvg ? (
-              <p className="text-xs text-gray-500 mt-3 leading-relaxed">
-                Your digital presence scores <span className="font-bold text-red-600">{industryAvg - healthScore} points below</span> the average {benchmark.scope === "industry" ? `${benchmark.label.toLowerCase()} business` : "business"} we&rsquo;ve analyzed ({benchmark.sampleCount} analyzed).
-              </p>
-            ) : (
-              <p className="text-xs text-gray-500 mt-3 leading-relaxed">
-                You&rsquo;re <span className="font-bold text-emerald-600">{healthScore - industryAvg} points above</span> the average {benchmark.scope === "industry" ? `${benchmark.label.toLowerCase()} business` : "business"} we&rsquo;ve analyzed ({benchmark.sampleCount} analyzed).
+
+            {localMarket.aheadOfYou > 0 && (
+              <p className="text-xs text-gray-600 mt-4 leading-relaxed">
+                <span className="font-bold text-red-600">{localMarket.aheadOfYou} of {localMarket.peerCount}</span> {localMarket.niche.toLowerCase()} businesses we analyzed in {localMarket.location} have more Google reviews than you.
+                {localMarket.avgRating !== null && ` The local average rating is ${localMarket.avgRating}★.`}
+                {" "}Review count and rating are among the signals Google weighs for the map results, and they are what a customer checks before calling.
               </p>
             )}
           </div>
         )}
 
-        {/* Estimated customer loss */}
-        {impactBasis > 0 && (
-          <div className="mt-6 bg-gradient-to-r from-red-50 to-orange-50 rounded-2xl border border-red-200 p-6 text-center">
-            <p className="text-[10px] font-bold text-red-800 uppercase tracking-widest mb-2">
-              {isMarketing ? "Estimated Monthly Revenue Impact" : "Estimated Monthly Impact"}
+        {/* Core Web Vitals in seconds. "41/100" is abstract; "your main content appears after
+            6.2 seconds" is something a business owner can feel — and it's Google's own
+            measurement of their own site. */}
+        {s.pageSpeed?.mobile && (
+          <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+            <p className="text-sm font-bold text-gray-900">What a Customer on a Phone Experiences</p>
+            <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+              Measured by Google Lighthouse on a mobile connection.
             </p>
-            <p className="text-3xl font-extrabold text-red-700">{estimatedLossMin}&ndash;{estimatedLossMax}</p>
-            <p className="text-sm font-semibold text-red-600 mt-1">
-              {isMarketing ? "potential leads that may be missed monthly" : "potential customers that may be missed monthly"}
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {[
+                {
+                  label: "Main content appears",
+                  value: `${(s.pageSpeed.mobile.largestContentfulPaint / 1000).toFixed(1)}s`,
+                  target: "Google's target: under 2.5s",
+                  bad: s.pageSpeed.mobile.largestContentfulPaint > 2500,
+                },
+                {
+                  label: "First content appears",
+                  value: `${(s.pageSpeed.mobile.firstContentfulPaint / 1000).toFixed(1)}s`,
+                  target: "Google's target: under 1.8s",
+                  bad: s.pageSpeed.mobile.firstContentfulPaint > 1800,
+                },
+                {
+                  label: "Layout stability",
+                  value: s.pageSpeed.mobile.cumulativeLayoutShift.toFixed(2),
+                  target: "Google's target: under 0.10",
+                  bad: s.pageSpeed.mobile.cumulativeLayoutShift > 0.1,
+                },
+              ].map((m) => (
+                <div key={m.label} className="rounded-xl p-3" style={{ background: m.bad ? "rgba(239,68,68,0.06)" : "rgba(16,185,129,0.06)" }}>
+                  <p className="text-xl font-extrabold tabular-nums" style={{ color: m.bad ? "#ef4444" : "#10b981" }}>{m.value}</p>
+                  <p className="text-[11px] font-semibold text-gray-700 mt-0.5 leading-tight">{m.label}</p>
+                  <p className="text-[10px] text-gray-400 mt-1 leading-tight">{m.target}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {failChecks.length > 0 && (
+          <div className="mt-6 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+            <p className="text-sm font-bold text-gray-900">Where to Start</p>
+            <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+              {failChecks.length} {failChecks.length === 1 ? "finding" : "findings"} from {checks.length} checks, ranked by how much each affects {isMarketing ? "lead capture and measurement" : isSeo ? "search visibility" : "customer trust and conversion"}.
             </p>
-            <p className="text-xs text-red-500/70 mt-2 leading-relaxed">
-              An indicative range based on {impactBasis} significant {impactBasis === 1 ? "finding" : "findings"} affecting {isMarketing ? "marketing effectiveness and lead conversion" : isSeo ? "search visibility and rankings" : "online visibility and conversion rate"}
-            </p>
+            <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+              {[
+                { n: failChecks.filter((c) => c.severity >= 3).length, label: "High priority", color: "#ef4444", bg: "rgba(239,68,68,0.08)" },
+                { n: failChecks.filter((c) => c.severity === 2).length, label: "Worth fixing", color: "#f59e0b", bg: "rgba(245,158,11,0.08)" },
+                { n: failChecks.filter((c) => c.severity <= 1).length, label: "Minor polish", color: "#64748b", bg: "rgba(100,116,139,0.08)" },
+              ].map((t) => (
+                <div key={t.label} className="rounded-xl py-3" style={{ background: t.bg }}>
+                  <p className="text-2xl font-extrabold" style={{ color: t.color }}>{t.n}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider mt-0.5" style={{ color: t.color }}>{t.label}</p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -1045,7 +1390,7 @@ export default function AuditReportPage() {
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">How This Was Produced</p>
           <p className="text-[11px] text-gray-400 leading-relaxed">
             This report is generated automatically by analyzing {s.pagesAnalyzed && s.pagesAnalyzed > 1 ? `${s.pagesAnalyzed} publicly accessible pages` : "the publicly accessible pages"} of {data.website ? truncateUrl(data.website, 60) : "the website"}
-            {(serviceType === "web_dev" || isSeo) && s.pageSpeed ? ", together with Google PageSpeed Insights data" : ""}.
+            {s.pageSpeed ? ", together with Google PageSpeed Insights data" : ""}.
             Where a tool or feature is described as &ldquo;not detected&rdquo;, it means we did not find evidence of it in the pages we analyzed &mdash; it does not confirm the business isn&apos;t using it. Findings are indicative and worth verifying against the business&apos;s own records.
           </p>
         </div>

@@ -41,8 +41,36 @@ export async function enrichLeadsInBackground(userId: string, leadIds: string[])
           if (!websiteUrl) {
             const discovered = await discoverWebsite(lead.company, lead.industry);
             if (discovered) {
+              // This write MUST be checked. idx_leads_user_website is a partial unique index
+              // (user_id, website) — unlimited rows may hold '', but only one may hold a given
+              // URL. Serper omits the website on most US Places listings, so a business the user
+              // already has is re-inserted with website='' and only unmasked here, at discovery
+              // time. Swallowing the resulting 23505 left the row enriched-but-URL-less, which
+              // made the email generator claim "this business has no website" about a site we
+              // had just crawled — while the audit report showed the full crawl.
+              const { error: siteWriteErr } = await supabase
+                .from("leads")
+                .update({ website: discovered })
+                .eq("id", lead.id);
+
+              if (siteWriteErr?.code === "23505") {
+                // The unique index is telling us this lead duplicates one the user already has.
+                // Drop it instead of enriching a second copy — otherwise both rows get scraped
+                // and both get emailed, sending two cold emails to the same inbox.
+                logger.info(
+                  { leadId: lead.id, company: lead.company, discovered },
+                  "Discovered website already belongs to another lead — removing duplicate"
+                );
+                leadsToDelete.push({ id: lead.id, campaignId: lead.campaign_id });
+                return;
+              }
+              if (siteWriteErr) {
+                logger.warn(
+                  { leadId: lead.id, discovered, error: siteWriteErr.message },
+                  "Failed to persist discovered website — enriching anyway"
+                );
+              }
               websiteUrl = discovered;
-              await supabase.from("leads").update({ website: discovered }).eq("id", lead.id);
             }
           }
 
@@ -120,6 +148,15 @@ export async function enrichLeadsInBackground(userId: string, leadIds: string[])
               .update(updateFields)
               .eq("id", lead.id);
           }
+
+          // NOTE: Lighthouse is deliberately NOT started here.
+          //
+          // Enrichment is the crawl only. The PageSpeed API is called from exactly two places
+          // — generating emails (`ensureAuditToken` in routes/generate.ts) and the Website
+          // Audit button (POST /api/audit/generate) — with the public report view retrying it
+          // if a run failed. Kicking it off at enrichment too would only move the cost earlier
+          // for leads that may never get an audit report at all.
+
         } catch (err) {
           logger.error({ leadId: lead.id, err }, "Background scrape failed for lead");
         }
@@ -144,7 +181,10 @@ export async function enrichLeadsInBackground(userId: string, leadIds: string[])
           .eq("id", cId);
       }
 
-      logger.info({ deletedCount: leadsToDelete.length }, "Removed useless leads (no email + no phone)");
+      // This list now holds two kinds of pruned lead — unreachable ones (no email, no phone)
+      // and duplicates caught at the discovered-website write — so the message no longer
+      // claims a single reason.
+      logger.info({ deletedCount: leadsToDelete.length }, "Pruned leads (unreachable or duplicate)");
 
       // Decrement daily + monthly counters so remaining slots stay accurate
       await decrementLeadsFoundToday(userId, leadsToDelete.length);

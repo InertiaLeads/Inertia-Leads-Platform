@@ -19,6 +19,21 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
 
   const push = (c: Check) => checks.push(c);
 
+  // Google's own browser could not render this page — the single most consequential thing we
+  // can observe, and fully reproducible by the reader.
+  if (s.pageSpeed?.renderFailure) {
+    push({
+      label: "Google's Rendering Test Could Not Load Your Homepage",
+      status: "opportunity",
+      category: "Technical SEO",
+      icon: "🚨",
+      severity: 4,
+      detail: "When Google's PageSpeed Insights loaded your homepage, the page completed without painting any content. This is reproducible at pagespeed.web.dev.",
+      impact: "Google indexes pages with the same rendering engine. A homepage that renders blank for it risks being treated as an empty page, which affects how — and whether — it ranks.",
+      fix: "Typically content that only appears after JavaScript runs, a render-blocking script, or a server stalling on the first request. Needs diagnosis against the live page.",
+    });
+  }
+
   // =========================================================================
   // TECHNICAL SEO
   // =========================================================================
@@ -233,7 +248,9 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
         status: "opportunity",
         category: "Technical SEO",
         icon: "🔗",
-        severity: 2,
+        severity: 3,
+        // Proportional: 2 dead links out of 40 is not the same finding as 20 out of 40.
+        ratio: Math.max(0, 1 - broken / s.checkedLinkCount),
         detail: `Of ${s.checkedLinkCount} internal links checked, ${broken} returned an error response${broken ? `. For example: ${s.brokenInternalLinks[0]}` : ""}.`,
         impact: "Visitors who follow a broken link reach a dead end, and crawlers waste crawl activity on URLs that return nothing. On a small site this is usually a handful of quick fixes.",
         fix: "Update or remove the links that no longer resolve, and add redirects for any pages that have moved.",
@@ -432,7 +449,9 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
         status: "opportunity",
         category: "On-Page SEO",
         icon: "🖼️",
-        severity: coverage < 40 ? 2 : 1,
+        severity: 2,
+        // 34% coverage used to score identically to 0%. It now scores 0.34 of the weight.
+        ratio: coverage / 100,
         detail: empty > 0
           ? `${missing} of ${s.imageCount} images analyzed carry no descriptive alt text — ${genuinelyMissing} have no alt attribute at all, and ${empty} use an empty alt="" (valid for decorative images).`
           : `${missing} of ${s.imageCount} images analyzed do not contain descriptive alt attributes.`,
@@ -450,7 +469,10 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
         status: "opportunity",
         category: "On-Page SEO",
         icon: "📰",
-        severity: 2,
+        severity: 3,
+        // Scaled against ~600 words, the point where a local service page has room to answer
+        // what a customer actually wants to know. 120 words scores 0.2, not 0.
+        ratio: Math.min(1, (s.wordCount ?? 0) / 600),
         detail: `Approximately ${s.wordCount} words of visible text were detected on the analyzed page.`,
         impact: "Pages with little text give search engines less to work with when matching a page to what someone searched for. It also leaves fewer opportunities to answer the questions a prospective customer has before getting in touch.",
         fix: `Expand the page with genuinely useful detail — services offered, areas covered, what to expect, and common questions ${trade} customers ask.`,
@@ -627,7 +649,9 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
       status: goodRating && reviews >= 10 ? "good" : "opportunity",
       category: "Local SEO Readiness",
       icon: "⭐",
-      severity: 2,
+      severity: 4,
+      // Rating and volume both scale. 3 reviews and 40 reviews are not the same position.
+      ratio: Math.min(1, (Math.min(1, reviews / 50) * 0.6) + (Math.max(0, Math.min(1, (s.googleRating - 3) / 2)) * 0.4)),
       detail: goodRating && reviews >= 10
         ? `A ${s.googleRating}-star rating across ${reviews} reviews was found — a strong signal for local pack rankings.`
         : `A ${s.googleRating}-star rating across ${reviews} review${reviews === 1 ? "" : "s"} was found.`,
@@ -699,6 +723,10 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
       category: "Performance",
       icon: "⚡",
       severity: 2,
+      // Mobile performance is a weighted component of the headline score in its own right;
+      // counting it again here would double-count it.
+      excludeFromScore: true,
+      ratio: mobilePerf / 100,
       detail: `Google Lighthouse rates this site's mobile performance at ${mobilePerf} out of 100. You can reproduce this at pagespeed.web.dev by entering the site URL.`,
       impact: fast ? "" : "Core Web Vitals form part of Google's page experience signals, and slow-loading pages tend to see higher abandonment on mobile connections.",
       fix: fast ? "" : "Compress and correctly size images, minify render-blocking CSS and JavaScript, and enable caching at the server or CDN level.",
@@ -712,6 +740,7 @@ export function buildSeoChecks(s: AuditSignals, industry: string): Check[] {
       category: "Performance",
       icon: "⚡",
       severity: 2,
+      excludeFromScore: true,
       detail: `The homepage took approximately ${secs} seconds to respond during our check.`,
       impact: fast ? "" : "Google's own research reports that a majority of mobile visitors abandon a page that takes more than three seconds to load.",
       fix: fast ? "" : "Compress images, enable caching, and review hosting performance.",

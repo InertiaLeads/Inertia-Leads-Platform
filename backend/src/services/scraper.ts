@@ -4,6 +4,7 @@ import { URL } from "url";
 import logger from "../utils/logger";
 import { detectLanguage } from "../utils/languageDetection";
 import { safeHttpAgent, safeHttpsAgent, isUrlSafe, isSameSite } from "./httpClient";
+import { canGoogleReachSite } from "./pageSpeed";
 import {
   analyzeRobotsTxt,
   analyzeSitemap,
@@ -24,6 +25,8 @@ import {
 } from "./marketingAnalysis";
 
 export interface WebsiteData {
+  /** The URL actually crawled, after redirects. Independent of the lead's `website` column. */
+  analyzedUrl: string;
   title: string;
   description: string;
   headings: string[];
@@ -193,9 +196,13 @@ export async function scrapeWebsite(
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9",
     };
+    // 20s, not 8s: this verdict is published to the business owner as "your website is down",
+    // so it must not be decided by a cold cache on shared hosting. A browser waits 30s+, and
+    // enrichment runs 5 leads at once, which makes our own requests the slow ones.
+    const CONNECT_TIMEOUT = 20000;
     try {
       await axios.head(websiteUrl, {
-        timeout: 8000,
+        timeout: CONNECT_TIMEOUT,
         maxRedirects: 5,
         httpAgent: safeHttpAgent,
         httpsAgent: safeHttpsAgent,
@@ -207,11 +214,14 @@ export async function scrapeWebsite(
       // HEAD failed — try GET (some servers/WAFs block HEAD entirely)
       try {
         await axios.get(websiteUrl, {
-          timeout: 8000,
+          timeout: CONNECT_TIMEOUT,
           maxRedirects: 5,
           httpAgent: safeHttpAgent,
           httpsAgent: safeHttpsAgent,
-          maxContentLength: 100 * 1024, // only need first 100KB to confirm site is up
+          // 5MB, not 100KB. axios REJECTS when maxContentLength is exceeded, so the old cap
+          // turned any homepage with >100KB of HTML — routine for WordPress — into a thrown
+          // error, and this catch reported the site as down because it was too big.
+          maxContentLength: 5 * 1024 * 1024,
           headers: connectHeaders,
           validateStatus: () => true,
         });
@@ -222,7 +232,29 @@ export async function scrapeWebsite(
     }
 
     if (!siteReachable) {
-      logger.info({ url: websiteUrl }, "Website unreachable — returning broken site marker");
+      // We could not reach it — but "we could not reach it" is not "it is down". Both HEAD and
+      // GET failing can just as easily mean the host's CDN is dropping traffic from our network
+      // or region, which is common with AWS and Cloudflare edges. Ask Google before making a
+      // claim the business owner can disprove by opening their own site.
+      const googleCanReach = await canGoogleReachSite(websiteUrl);
+
+      if (googleCanReach === true) {
+        // The site is UP and the fault is ours. Return null: no enrichment record, so no audit
+        // token is minted, no report is published, and the email generator falls back to its
+        // neutral copy. Losing one prospect beats accusing a healthy business of being offline.
+        logger.warn(
+          { url: websiteUrl },
+          "Unreachable from here but Google loads it fine — our network path is blocked, NOT marking the site down"
+        );
+        return null;
+      }
+
+      logger.info(
+        { url: websiteUrl, googleCanReach },
+        googleCanReach === false
+          ? "Website unreachable and Google can't reach it either — marking site down"
+          : "Website unreachable and Google gave no verdict — marking site down"
+      );
       return {
         title: "",
         description: "",
@@ -247,18 +279,26 @@ export async function scrapeWebsite(
       try {
         const startTime = Date.now();
         const response = await axios.get(url, {
-          timeout: 10000,
+          timeout: 20000,
           maxRedirects: 5,
           httpAgent: safeHttpAgent,
           httpsAgent: safeHttpsAgent,
-          maxContentLength: 2 * 1024 * 1024, // 2MB max — skip huge pages
+          maxContentLength: 5 * 1024 * 1024,
           headers: {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
           },
+          // Every other fetch in this file sets this; without it axios THROWS on any non-2xx,
+          // so a WAF's 403 was indistinguishable from a network failure. Statuses are judged
+          // explicitly below instead.
+          validateStatus: () => true,
         });
+        // A block page or error page is not content. Returning null here means the caller
+        // reports "we couldn't analyse this site" rather than parsing Cloudflare's HTML and
+        // publishing "no contact form, no booking, no title" about a healthy business.
+        if (response.status >= 400) return null;
         const loadTimeMs = Date.now() - startTime;
         const responseUrl: string = response.request?.res?.responseUrl || url;
         // Capture final URL after redirects (for SSL detection)
@@ -546,7 +586,13 @@ export async function scrapeWebsite(
           const hasMessageField = formHtml.includes("<textarea");
           const hasNameField = formHtml.includes('name="name"') || formHtml.includes('name="full') ||
             formHtml.includes('type="text"');
-          if ((hasEmailField || hasNameField || hasPhoneField) && hasMessageField) {
+          // A textarea used to be mandatory, which reported "No Contact Form" on every modern
+          // short quote form (name + email + phone + submit). A contact channel that captures
+          // an email or phone number IS a contact form; the textarea only makes it a longer one.
+          // Search boxes and newsletter-only inputs are excluded by requiring a contact field
+          // plus either a message box or a second identifying field.
+          const contactFieldCount = [hasEmailField, hasPhoneField, hasNameField].filter(Boolean).length;
+          if ((hasEmailField || hasPhoneField) && (hasMessageField || contactFieldCount >= 2)) {
             hasRealContactForm = true;
           }
         });
@@ -684,17 +730,45 @@ export async function scrapeWebsite(
     })();
 
     // ===== NEW SIGNAL: Parked domain detection =====
+    // This flag is destructive — it publishes "Domain is Parked / Under Construction" to the
+    // business owner and overrides every other finding — so the evidence bar is high:
+    //
+    //  * Evidence must come from the HOMEPAGE's VISIBLE text, never from `allHtml`. Searching
+    //    the raw markup of up to 7 pages meant one hidden carousel slide, one `.coming-soon`
+    //    CSS class, one unused page-builder template string or one blog post was enough to
+    //    brand a thriving business a parked domain.
+    //  * Word-boundary regexes, not substrings: "dan.com" matched inside "sudan.com".
+    //  * "coming soon" / "under construction" are counted only on a page with almost no other
+    //    content. A real site with a Coming Soon teaser has hundreds of words around it.
     const isParkedDomain = (() => {
-      const parkedSignals = [
-        "domain is for sale", "this domain is registered", "buy this domain",
-        "domain may be for sale", "parked by", "parked domain", "parked free",
-        "under construction", "coming soon", "website coming soon",
-        "future home of", "this site is under development",
-        "this website is for sale", "make an offer on this domain",
-        "godaddy.com/forsale", "dan.com", "afternic.com", "sedo.com",
-        "hugedomains.com", "undeveloped.com",
+      const home = pages[0];
+      if (!home) return false;
+      const homeText = home("body").text().replace(/\s+/g, " ").trim().toLowerCase();
+      const homeTitle = home("title").text().trim().toLowerCase();
+      const haystack = `${homeTitle} ${homeText}`;
+
+      // Unambiguous: nobody puts these on a working business site.
+      const forSaleSignals = [
+        /\bdomain (?:is|may be) for sale\b/,
+        /\bbuy this domain\b/,
+        /\bthis domain is registered\b/,
+        /\bthis website is for sale\b/,
+        /\bmake an offer on this domain\b/,
+        /\bparked (?:by|domain|free)\b/,
+        /\bfuture home of\b/,
+        /\bgodaddy\.com\/forsale\b/,
+        /\b(?:dan|afternic|sedo|hugedomains|undeveloped)\.com\b/,
       ];
-      return parkedSignals.some(s => allPageText.includes(s) || allHtml.includes(s));
+      if (forSaleSignals.some((re) => re.test(haystack))) return true;
+
+      // Ambiguous: only meaningful on a page that has nothing else on it.
+      const placeholderSignals = [
+        /\bunder construction\b/,
+        /\bcoming soon\b/,
+        /\bsite is under development\b/,
+      ];
+      const homeWordCount = homeText.split(/\s+/).filter(Boolean).length;
+      return homeWordCount < 120 && placeholderSignals.some((re) => re.test(haystack));
     })();
 
     // Extract email addresses from all pages
@@ -1006,6 +1080,11 @@ export async function scrapeWebsite(
     const conversionPath = await analyzeConversionPath(cta, crawledPages, baseUrl.hostname);
 
     return {
+      // The URL we actually analysed, after redirects. Persisted so the report and the email
+      // always have a real address to show even when the lead's `website` column is empty —
+      // a discovered URL can fail to save (duplicate-URL collision), and a report that
+      // analysed six pages must never render as though the business had no site.
+      analyzedUrl: finalUrl,
       title: title.slice(0, 200),
       description: description.slice(0, 500),
       headings,

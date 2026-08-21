@@ -714,9 +714,30 @@ router.post("/enrich", authMiddleware, enrichLimiter, async (req: AuthenticatedR
             const { discoverWebsite } = await import("../services/leadFinder");
             const discovered = await discoverWebsite(lead.company, lead.industry);
             if (discovered) {
+              // Checked write — see the matching comment in services/leadEnrichment.ts. A 23505
+              // here means idx_leads_user_website already holds this URL on another lead, i.e.
+              // this row is a duplicate; enriching it would produce a second email to the same
+              // business and an audit report whose lead has no website URL.
+              const { error: siteWriteErr } = await supabase
+                .from("leads")
+                .update({ website: discovered })
+                .eq("id", lead.id)
+                .eq("user_id", req.userId);
+
+              if (siteWriteErr?.code === "23505") {
+                logger.info(
+                  { leadId: lead.id, company: lead.company, discovered },
+                  "Discovered website already belongs to another lead — skipping duplicate"
+                );
+                return null;
+              }
+              if (siteWriteErr) {
+                logger.warn(
+                  { leadId: lead.id, discovered, error: siteWriteErr.message },
+                  "Failed to persist discovered website — enriching anyway"
+                );
+              }
               websiteUrl = discovered;
-              // Save discovered website to the lead
-              await supabase.from("leads").update({ website: discovered }).eq("id", lead.id).eq("user_id", req.userId);
             }
           }
 
@@ -730,7 +751,10 @@ router.post("/enrich", authMiddleware, enrichLimiter, async (req: AuthenticatedR
           );
 
           const score = scoreLead({
-            website: lead.website,
+            // websiteUrl, NOT lead.website: after discovery the in-memory row is stale, and
+            // passing '' awarded the +30 "no website at all" penalty to a business whose site
+            // had just been crawled — which is what produced 15/100 grades on healthy sites.
+            website: websiteUrl,
             enriched_data: {
               ...websiteData as any,
             },
@@ -803,6 +827,9 @@ router.post("/enrich", authMiddleware, enrichLimiter, async (req: AuthenticatedR
           }
 
           if (!updateError) {
+            // No Lighthouse call here — see the note in services/leadEnrichment.ts. The Enrich
+            // button crawls the site; the PageSpeed API is called when emails are generated or
+            // when the Website Audit button is used.
             return {
               id: lead.id,
               score,

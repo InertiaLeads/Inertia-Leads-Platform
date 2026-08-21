@@ -306,6 +306,12 @@ export async function checkInternalLinks(
       batch.map(async (url) => {
         const result = await safeProbe(url);
         if (!result) return; // unreachable/timeout — not claimed as broken
+        // 401/403 = the page exists but is protected (members area, or a WAF refusing a
+        // data-centre IP). 429 = we probed too fast, which is our fault, not theirs. None of
+        // these are broken links, and reporting them as such accuses the owner of a fault
+        // they can't reproduce in their own browser.
+        const NOT_OUR_VERDICT = [401, 403, 429];
+        if (NOT_OUR_VERDICT.includes(result.status)) return;
         if (result.status >= 400) {
           broken.push(url);
         } else if (result.status >= 300 && result.status < 400 && result.location) {

@@ -4,7 +4,8 @@ import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import supabase from "../services/supabase";
 import openai from "../services/openai";
 import { checkDailyGenerationLimit, PLAN_CONFIGS, getUserPlan, reserveGenerationsToday, releaseGenerationsToday, ServiceType, getFeatureAccess } from "../services/planLimits";
-import { getPageSpeedScores } from "../services/pageSpeed";
+import { schedulePageSpeedInBackground } from "../services/pageSpeed";
+import { mergeEnrichedData } from "../services/enrichedData";
 import { getLanguageName } from "../utils/languageDetection";
 import { getSuppressedEmails } from "../services/suppression";
 import logger from "../utils/logger";
@@ -196,13 +197,46 @@ function pickStructure(): string {
   return STRUCTURE_VARIANTS[Math.floor(Math.random() * STRUCTURE_VARIANTS.length)];
 }
 
+/**
+ * Did we actually crawl a website for this lead?
+ *
+ * The `website` column on its own is NOT evidence of absence. A lead can be enriched from a
+ * discovered URL whose write-back failed (duplicate-URL collision — see leadEnrichment.ts),
+ * which leaves a fully crawled site sitting behind an empty column. Telling a business it has
+ * no website while linking them to our crawl of that website in the same email is the single
+ * most damaging thing this generator can do, so the "no website" claim now requires BOTH an
+ * unusable URL and no crawl evidence.
+ */
+function hasCrawledSite(lead: any): boolean {
+  const ed = lead?.enriched_data || {};
+  if (ed._siteDown || ed.isParkedDomain) return false; // reachable-but-broken is its own branch
+  return !!(
+    ed.analyzedUrl ||
+    ed.title ||
+    ed.description ||
+    ed.pagesAnalyzed ||
+    ed.hasSSL !== undefined ||
+    (Array.isArray(ed.technologies) && ed.technologies.length > 0)
+  );
+}
+
+function leadHasNoWebsite(lead: any): boolean {
+  const url: string = lead?.website || "";
+  return !url.startsWith("http") && !hasCrawledSite(lead);
+}
+
 function buildInitialPrompt(lead: any, tone: ToneKey, enriched?: { summary?: string; issues?: string; digitalGaps?: string; noWebsite?: boolean; brokenWebsite?: boolean; auditUrl?: string }, serviceType: ServiceType = "web_dev", language: string = "eng"): string {
   const company = sanitizeForPrompt(lead.company);
   const industry = sanitizeForPrompt(lead.industry || "Local business");
   const address = sanitizeForPrompt(lead.enriched_data?.address || "");
   const contactName = sanitizeForPrompt(lead.name || "");
-  const website = sanitizeForPrompt(lead.website || "");
-  const hasNoWebsite = enriched?.noWebsite || (!lead.website || !lead.website.startsWith("http"));
+  // Fall back to the URL the crawler actually analysed. A lead whose discovered URL failed to
+  // save still has a real address here, and leaving the line blank invited the model to fill
+  // the gap itself.
+  const website = sanitizeForPrompt(lead.website || lead.enriched_data?.analyzedUrl || "");
+  // Trust the caller's explicit decision; fall back to the evidence-based check, never to a
+  // bare `!lead.website` (which fired on every lead whose discovered URL failed to save).
+  const hasNoWebsite = enriched?.noWebsite ?? leadHasNoWebsite(lead);
   const hasBrokenWebsite = enriched?.brokenWebsite || false;
 
   // Sanitize enrichment data too
@@ -229,7 +263,7 @@ What this means:
 - A broken site is worse than no site — it screams "this business is closed" to customers
 - Every day it stays broken, they lose walk-in and phone customers who check online first`;
   } else if (enriched) {
-    context = `Industry: ${industry}${city ? `\nCity: ${city}` : ""}${address ? `\nFull address: ${address}` : ""}\nWebsite: ${website}\nWhat their site does: ${enrichedSummary}`;
+    context = `Industry: ${industry}${city ? `\nCity: ${city}` : ""}${address ? `\nFull address: ${address}` : ""}${website ? `\nWebsite: ${website}` : ""}\nWhat their site does: ${enrichedSummary}`;
     if (enrichedGaps) {
       context += `\nSpecific problems found on their site:\n${enrichedGaps}`;
     }
@@ -468,44 +502,41 @@ async function ensureAuditToken(lead: any, serviceType: ServiceType = "web_dev")
   const hasEnrichment = ed.summary || ed.hasOnlineBooking !== undefined || ed.hasContactForm !== undefined || ed.hasSSL !== undefined || ed._siteDown || ed.isParkedDomain;
   if (!hasEnrichment) return undefined;
 
-  // Already has a token — fetch PageSpeed if missing (only for web_dev and seo)
+  const auditUrl = (t: string) => `${process.env.FRONTEND_URL || "http://localhost:3000"}/audit/${t}`;
+  // `analyzedUrl` is the URL the crawler actually used. Falling back to it matters: a lead
+  // whose discovered website failed to persist has an empty column but a real, crawled site,
+  // and keying off the column alone silently skipped Lighthouse for every one of them.
+  const pageSpeedUrl: string = lead.website || ed.analyzedUrl || "";
+  const wantsPageSpeed = !ed.pageSpeed && !!pageSpeedUrl && !ed._siteDown && !ed.isParkedDomain;
+
+  // Both writes below patch ONLY their own keys through a fresh read. `lead` was loaded at
+  // the top of a request that spends 30s+ in the model, so spreading `ed` back over the row
+  // erased whatever the background Lighthouse fetch had stored in the meantime — the exact
+  // reason measured reports rendered with no gauges.
   if (ed.audit_token) {
-    const needsPageSpeed = (serviceType === "web_dev" || serviceType === "seo") && !ed.pageSpeed && lead.website && !ed._siteDown && !ed.isParkedDomain;
-    if (needsPageSpeed) {
-      const pageSpeedData = await getPageSpeedScores(lead.website);
-      if (pageSpeedData) {
-        await supabase.from("leads")
-          .update({ enriched_data: { ...ed, pageSpeed: pageSpeedData, audit_service_type: serviceType } })
-          .eq("id", lead.id);
-      }
-    } else if (!ed.audit_service_type) {
+    if (wantsPageSpeed) schedulePageSpeedInBackground(lead.id, pageSpeedUrl);
+    if (!ed.audit_service_type) {
       // Backfill service type for existing tokens
-      await supabase.from("leads")
-        .update({ enriched_data: { ...ed, audit_service_type: serviceType } })
-        .eq("id", lead.id);
+      await mergeEnrichedData(lead.id, { audit_service_type: serviceType });
     }
-    return `${process.env.FRONTEND_URL || "http://localhost:3000"}/audit/${ed.audit_token}`;
+    return auditUrl(ed.audit_token);
   }
 
-  // Generate new token + fetch PageSpeed only for web_dev/seo
   const token = crypto.randomBytes(12).toString("base64url");
+  const stored = await mergeEnrichedData(lead.id, {
+    audit_token: token,
+    audit_service_type: serviceType,
+  });
 
-  let pageSpeedData = null;
-  if ((serviceType === "web_dev" || serviceType === "seo") && lead.website && !ed._siteDown && !ed.isParkedDomain) {
-    pageSpeedData = await getPageSpeedScores(lead.website);
-  }
-
-  const { error } = await supabase
-    .from("leads")
-    .update({ enriched_data: { ...ed, audit_token: token, audit_service_type: serviceType, ...(pageSpeedData ? { pageSpeed: pageSpeedData } : {}) } })
-    .eq("id", lead.id);
-
-  if (error) {
-    logger.error({ leadId: lead.id, error }, "Failed to auto-generate audit token");
+  if (!stored) {
+    logger.error({ leadId: lead.id }, "Failed to auto-generate audit token");
     return undefined;
   }
 
-  return `${process.env.FRONTEND_URL || "http://localhost:3000"}/audit/${token}`;
+  // Token is written; Lighthouse can land afterwards.
+  if (wantsPageSpeed) schedulePageSpeedInBackground(lead.id, pageSpeedUrl);
+
+  return auditUrl(token);
 }
 
 // ===== LEAD QUALITY FILTER =====
@@ -693,9 +724,13 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
     // Generate emails in parallel batches of 5
     const results = await processBatch(sendableLeads, PARALLEL_BATCH_SIZE, async (lead) => {
       const tone = pickTone();
-      const hasNoWebsite = !lead.website || !lead.website.startsWith("http");
+      const hasNoWebsite = leadHasNoWebsite(lead);
       const enrichedData = lead.enriched_data || {};
-      const hasBrokenWebsite = !hasNoWebsite && (enrichedData._siteDown === true || (!enrichedData.title && !enrichedData.description && (!enrichedData.technologies || enrichedData.technologies.length === 0)));
+      // Only the explicit markers may claim a broken site. The old fallback — "no title, no
+      // description, no technologies" — is the signature of a scrape that FAILED (a WAF 403, a
+      // timeout, a lead enriched before these fields existed), not of a broken website, and it
+      // put "your website is down or unreachable" in front of owners whose sites were fine.
+      const hasBrokenWebsite = !hasNoWebsite && (enrichedData._siteDown === true || enrichedData.isParkedDomain === true);
       const auditUrl = canIncludeAudit ? await ensureAuditToken(lead, basicServiceType) : undefined;
       const summary = enrichedData.summary || lead.company;
       const leadLanguage = lead.detected_language || "eng";
@@ -1045,8 +1080,10 @@ router.post("/advanced", authMiddleware, async (req: AuthenticatedRequest, res) 
       }
 
       // Detect no-website and broken-website leads
-      const hasNoWebsite = !lead.website || !lead.website.startsWith("http");
-      const hasBrokenWebsite = !hasNoWebsite && !enrichedData.title && !enrichedData.description && (!enrichedData.technologies || enrichedData.technologies.length === 0) && !enrichedData.hasOnlineBooking && !enrichedData.hasContactForm && (!enrichedData.socialLinks || enrichedData.socialLinks.length === 0);
+      const hasNoWebsite = leadHasNoWebsite(lead);
+      // See the matching comment on the initial-generation path: an empty enrichment record
+      // means we could not analyse the site, which is not the same as the site being broken.
+      const hasBrokenWebsite = !hasNoWebsite && (enrichedData._siteDown === true || enrichedData.isParkedDomain === true);
 
       // Sort by priority (highest first) and take top 3
       allGaps.sort((a, b) => b.priority - a.priority);
@@ -1297,17 +1334,13 @@ router.post("/call-scripts", authMiddleware, async (req: AuthenticatedRequest, r
         if (content) {
           const scriptData = JSON.parse(content);
 
-          // Save call script to lead's enriched_data
-          await supabase
-            .from("leads")
-            .update({
-              enriched_data: {
-                ...enrichedData,
-                call_script: scriptData,
-              },
-            })
-            .eq("id", lead.id)
-            .eq("user_id", req.userId);
+          // Save call script to lead's enriched_data.
+          //
+          // Merged, not spread. `enrichedData` was read before a gpt-4o call that takes tens
+          // of seconds, and a background Lighthouse fetch for the same lead lands inside that
+          // window — spreading the stale snapshot deleted `pageSpeed` right after it was
+          // stored, so generating call scripts stripped the gauges off audit reports.
+          await mergeEnrichedData(lead.id, { call_script: scriptData });
 
           return {
             lead_id: lead.id,

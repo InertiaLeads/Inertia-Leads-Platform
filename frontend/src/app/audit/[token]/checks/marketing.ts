@@ -1,5 +1,11 @@
 import type { AuditSignals, Check } from "../types";
 
+// Absence of a tag in static HTML is weaker evidence than presence. Consent-gated and
+// server-side tagging are both common (and near-universal in the EU), so the copy says what
+// we looked at rather than asserting the tool is not installed.
+const CONSENT_CAVEAT =
+  " Tags that load only after cookie consent, or through a server-side container, may not appear in the page source we read.";
+
 // =============================================
 // Digital marketing audit findings
 // =============================================
@@ -15,6 +21,27 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   const trade = (industry || "local business").toLowerCase();
   const push = (c: Check) => checks.push(c);
 
+  // Google's own browser could not render this page — the single most consequential thing we
+  // can observe, and fully reproducible by the reader.
+  if (s.pageSpeed?.renderFailure) {
+    push({
+      label: "Google's Tools Could Not Load Your Landing Page",
+      status: "opportunity",
+      category: "Conversion",
+      icon: "🚨",
+      severity: 4,
+      detail: "When Google's PageSpeed Insights loaded your homepage, the page completed without displaying any content. This is reproducible at pagespeed.web.dev.",
+      impact: "Any advertising that points at this page is paying for clicks that may arrive at a blank screen. Landing page experience also feeds Google Ads Quality Score, which sets what each click costs.",
+      fix: "Usually content that only renders after JavaScript, a blocking script, or a slow first response. Needs diagnosis against the live page.",
+    });
+  }
+
+  // The crawler reads static HTML only. On a JS-rendered site the CTA, the forms and the
+  // booking widget are assembled in the browser, so their absence from the markup is OUR
+  // blind spot — not a missing feature. Script-based findings (analytics, pixels, tag
+  // managers, chat and popup tools) stay: those tags sit in the static HTML either way.
+  const contentVisible = !s.isSPA;
+
   // =========================================================================
   // MEASUREMENT
   // =========================================================================
@@ -28,7 +55,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
       severity: 3,
       detail: s.hasAnalytics
         ? "An analytics implementation was detected, so visitor numbers, traffic sources and on-site behaviour can be measured."
-        : "No supported analytics implementation was detected on the analyzed pages.",
+        : "No supported analytics implementation was detected in the page source of the analyzed pages." + CONSENT_CAVEAT,
       impact: s.hasAnalytics ? "" : "Without analytics there is no record of how many people visit, where they arrive from, or which pages they leave on. Every marketing decision then rests on assumption rather than observation.",
       fix: s.hasAnalytics ? "" : "Install Google Analytics 4 and configure the events that represent a genuine lead — form submission, phone tap, booking completed.",
     });
@@ -93,7 +120,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
       severity: 2,
       detail: s.hasFacebookPixel
         ? "A Meta (Facebook/Instagram) Pixel was detected, so site visitors can form audiences for social advertising."
-        : "No supported Meta Pixel implementation was detected on the analyzed pages.",
+        : "No supported Meta Pixel implementation was detected in the page source of the analyzed pages." + CONSENT_CAVEAT,
       impact: s.hasFacebookPixel ? "" : "A pixel is what allows a visitor who didn't enquire on their first visit to be reached again through Facebook or Instagram. Without one, that audience can't be built retrospectively — the data isn't collected until the pixel is installed.",
       fix: s.hasFacebookPixel ? "" : "Install the Meta Pixel and define the events worth tracking, even before running ads, so an audience accumulates from now on.",
     });
@@ -175,7 +202,8 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
       status: goodRating && reviews >= 10 ? "good" : "opportunity",
       category: "Acquisition",
       icon: "⭐",
-      severity: 2,
+      severity: 4,
+      ratio: Math.min(1, (Math.min(1, reviews / 50) * 0.6) + (Math.max(0, Math.min(1, ((s.googleRating ?? 0) - 3) / 2)) * 0.4)),
       detail: goodRating && reviews >= 10
         ? `A ${s.googleRating}-star rating across ${reviews} reviews was found — solid social proof for anyone arriving from an ad.`
         : `A ${s.googleRating}-star rating across ${reviews} review${reviews === 1 ? "" : "s"} was found.`,
@@ -188,7 +216,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
       status: "opportunity",
       category: "Acquisition",
       icon: "⭐",
-      severity: 2,
+      severity: 4,
       detail: "We were unable to find a Google Business Profile associated with this business during our checks.",
       impact: "A Google Business Profile carries the reviews, photos and contact details that appear alongside local search results — often the first impression a customer forms before visiting the website at all.",
       fix: "Create and verify a Google Business Profile with complete business information and photographs.",
@@ -200,7 +228,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   // =========================================================================
 
   // ---- CTA quality (deeper than simple presence) ----
-  if (s.ctaStrength !== null) {
+  if (s.ctaStrength !== null && contentVisible) {
     const strength = s.ctaStrength;
     if (strength === "strong") {
       push({
@@ -245,7 +273,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   // ---- Competing calls-to-action ----
   // Only raised when several DIFFERENT high-intent actions share the opening screen.
   // Repeating one action down the page is good practice and is not flagged.
-  if (s.competingCtas) {
+  if (s.competingCtas && contentVisible) {
     const texts = s.competingCtaTexts;
     push({
       label: `${texts.length} Competing Actions in the Opening Section`,
@@ -260,7 +288,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   }
 
   // ---- Conversion path (highest-value marketing finding) ----
-  if (s.hasClearConversionPath !== null) {
+  if (s.hasClearConversionPath !== null && contentVisible) {
     if (s.hasClearConversionPath) {
       const dest = s.conversionDestinationType;
       const destLabel =
@@ -295,7 +323,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   }
 
   // ---- Lead form friction ----
-  if (s.formFriction !== null) {
+  if (s.formFriction !== null && contentVisible) {
     const fields = s.formFieldCount ?? 0;
     const required = s.requiredFieldCount ?? 0;
     const friction = s.formFriction;
@@ -327,13 +355,13 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   }
 
   // ---- Booking ----
-  if (s.hasOnlineBooking !== null) {
+  if (s.hasOnlineBooking !== null && contentVisible) {
     push({
       label: s.hasOnlineBooking ? "Online Booking Available" : "No Online Booking Detected",
       status: s.hasOnlineBooking ? "good" : "opportunity",
       category: "Conversion",
       icon: "📅",
-      severity: 2,
+      severity: 4,
       detail: s.hasOnlineBooking
         ? "A booking or scheduling system was detected, so customers can arrange an appointment without calling."
         : "No online booking or scheduling system was detected on the analyzed pages.",
@@ -343,13 +371,13 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   }
 
   // ---- Contact form ----
-  if (s.hasContactForm !== null) {
+  if (s.hasContactForm !== null && contentVisible) {
     push({
       label: s.hasContactForm ? "Contact Form Detected" : "No Contact Form Detected",
       status: s.hasContactForm ? "good" : "opportunity",
       category: "Conversion",
       icon: "✉️",
-      severity: 2,
+      severity: 4,
       detail: s.hasContactForm
         ? "An enquiry form or live chat option was detected, giving visitors a way to make contact without phoning."
         : "No enquiry form or live chat option was detected on the analyzed pages.",
@@ -411,7 +439,7 @@ export function buildMarketingChecks(s: AuditSignals, industry: string): Check[]
   // RETENTION & NURTURING
   // =========================================================================
 
-  if (s.hasLeadCaptureForm !== null) {
+  if (s.hasLeadCaptureForm !== null && contentVisible) {
     push({
       label: s.hasLeadCaptureForm ? "Email Capture Detected" : "No Email Capture Detected",
       status: s.hasLeadCaptureForm ? "good" : "opportunity",

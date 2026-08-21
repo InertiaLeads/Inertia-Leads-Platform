@@ -40,7 +40,19 @@ export interface AuditSignals {
   technologies: string[];
   isParkedDomain: boolean;
   _siteDown: boolean;
-  pageSpeed: { mobile: PageSpeedMetrics | null; desktop: PageSpeedMetrics | null } | null;
+  /**
+   * True when the homepage is JS-rendered (React/Vue/Next/Nuxt/Angular, or a body with no
+   * text and many scripts). The crawler reads static HTML only, so on these sites the
+   * absence of a form, a booking widget or a CTA is OUR blind spot, not their omission —
+   * checks that depend on visible page content are withheld rather than failed.
+   */
+  isSPA: boolean | null;
+  pageSpeed: {
+    mobile: PageSpeedMetrics | null;
+    desktop: PageSpeedMetrics | null;
+    /** Lighthouse could not render the page at all (e.g. "NO_FCP" — nothing painted). */
+    renderFailure?: string | null;
+  } | null;
   hasGoogleAds: boolean | null;
   hasFacebookPixel: boolean | null;
   hasAnalytics: boolean | null;
@@ -151,6 +163,30 @@ export interface AuditData {
   issues: string[];
   opportunity: string | null;
   signals: AuditSignals;
+  /**
+   * True while a Lighthouse run for this lead is still in flight on the server.
+   *
+   * The two Lighthouse runs take 30–90s and are no longer awaited inside any request, so a
+   * freshly generated report is routinely served before Google's numbers exist. The page polls
+   * while this is set rather than rendering a permanently gauge-less report.
+   */
+  pageSpeedPending?: boolean;
+  /**
+   * Real comparison against the other businesses in the SAME niche and the SAME city, using
+   * Google's own review counts and ratings. Unlike the benchmark this replaces, every figure
+   * here is a published Google number the reader can verify by searching their own trade in
+   * their own town — and the peers are their actual competitors, not a national average.
+   */
+  localMarket?: {
+    niche: string;
+    location: string;
+    peerCount: number;
+    avgReviews: number;
+    avgRating: number | null;
+    topReviews: number;
+    /** How many peers have MORE reviews than this business. */
+    aheadOfYou: number;
+  } | null;
 }
 
 /**
@@ -176,10 +212,27 @@ export interface Check {
   /** "Opportunity" — the specific improvement to consider. Empty for passing checks. */
   fix: string;
   /**
-   * 1–3. Drives ordering within a section and which findings count toward the
-   * headline impact estimate. 3 = materially blocking, 1 = polish.
+   * 1–4. Drives ordering within a section, the priority tiles, and this check's weight in
+   * the score. 4 = costs the business enquiries directly (no way to book, no way to get in
+   * touch, invisible to Google, site not usable on a phone). 3 = materially blocking.
+   * 2 = worth fixing. 1 = polish and technical hygiene.
    */
   severity: number;
+  /**
+   * Optional 0–1 quality ratio for a check measuring something CONTINUOUS — alt-text
+   * coverage, content depth, review count, load time.
+   *
+   * Without it a check is all-or-nothing, so 34% alt-text coverage scored exactly the same
+   * as 0%, and a site squeaking over a threshold banked full marks. Both directions
+   * flattered the site and made the headline score cluster at the top. When set, the score
+   * uses this fraction of the check's weight; `status` still decides the colour and copy.
+   */
+  ratio?: number;
+  /**
+   * Set on checks whose measurement is ALREADY a component of the composite score in its
+   * own right (the Lighthouse performance checks). Without this they'd be counted twice.
+   */
+  excludeFromScore?: boolean;
 }
 
 export const isPassing = (c: Check): boolean => c.status === "good";
@@ -200,4 +253,9 @@ export const MARKETING_CATEGORIES = [
   "Retention & Nurturing",
 ] as const;
 
-export const WEB_DEV_CATEGORIES = ["Website Health"] as const;
+export const WEB_DEV_CATEGORIES = [
+  "Security & Trust",
+  "Mobile & Performance",
+  "Turning Visitors Into Customers",
+  "Build Quality",
+] as const;
