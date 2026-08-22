@@ -132,7 +132,7 @@ export default function ResetPasswordPage() {
       </div>
       <div className="absolute -top-32 -left-32 w-96 h-96 rounded-full blur-3xl" style={{ background: "rgba(105, 98, 196, 0.12)" }} />
       <div className="absolute bottom-0 right-0 w-72 h-72 rounded-full blur-3xl" style={{ background: "rgba(61, 53, 128, 0.10)" }} />
-      <div className="relative z-10 max-w-md w-full space-y-8 p-8 rounded-2xl border" style={{ background: "rgba(26, 21, 64, 0.6)", borderColor: "rgba(255,255,255,0.08)", backdropFilter: "blur(20px)" }}>
+      <div className="dark-inputs relative z-10 max-w-md w-full space-y-8 p-8 rounded-2xl border" style={{ background: "rgba(26, 21, 64, 0.6)", borderColor: "rgba(255,255,255,0.08)", backdropFilter: "blur(20px)" }}>
         <div>
           <h2 className="text-center text-3xl font-bold text-white">
             Set new password

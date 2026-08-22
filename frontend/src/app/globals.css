@@ -381,3 +381,27 @@ input, textarea, select, [contenteditable="true"] {
   contain: paint;
 }
 
+
+/* Autofill colours for the dark auth cards.
+ *
+ * `.dark-inputs` above sets `color`, which handles TYPED text. It does not help with
+ * autofilled text: Chrome paints those using its own `-webkit-text-fill-color`, which
+ * overrides `color` entirely, so a saved password still rendered near-black on these cards.
+ *
+ * `background-color` is overridden the same way, hence the 1000px inset box-shadow — the
+ * standard trick for repainting an autofilled field so it matches its neighbours. The absurd
+ * transition delay stops Chrome fading its pale tint back in afterwards.
+ *
+ * Scoped under `.dark-inputs` on purpose, matching the rule above: the dashboard's inputs are
+ * light with dark text, and a global version of this would make THOSE unreadable instead. */
+.dark-inputs input:-webkit-autofill,
+.dark-inputs input:-webkit-autofill:hover,
+.dark-inputs input:-webkit-autofill:focus,
+.dark-inputs input:-webkit-autofill:active,
+.dark-inputs textarea:-webkit-autofill,
+.dark-inputs select:-webkit-autofill {
+  -webkit-text-fill-color: #ffffff;
+  caret-color: #ffffff;
+  -webkit-box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.06) inset;
+  transition: background-color 9999s ease-in-out 0s;
+}
