@@ -3,6 +3,7 @@ import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import supabase from "../services/supabase";
 import { isValidUUID } from "../middleware/validate";
 import { auditLog } from "../utils/auditLog";
+import logger from "../utils/logger";
 
 const router = Router();
 
@@ -48,6 +49,145 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
 
     res.json({ campaigns });
   } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// GET /api/campaigns/lead-search?q= — Find a LEAD across every campaign
+//
+// Exists because of a workflow dead end: when a prospect replies, the user must mark that
+// lead as replied to stop the remaining follow-ups — but the Mark-replied control lives inside
+// one campaign's email modal. With dozens of campaigns there was no way to discover WHICH
+// campaign held the lead, so the only route to it was opening campaigns one by one.
+//
+// This returns the lead itself plus the campaign it belongs to and the id of the email to
+// mark, so the caller can act without navigating at all. Read-only; the actual marking still
+// goes through the existing POST /api/send/mark-reply.
+//
+// MUST stay above `/:id` — Express matches in order, and "lead-search" would otherwise be
+// swallowed as a campaign id.
+router.get("/lead-search", authMiddleware, async (req: AuthenticatedRequest, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+
+    // Two characters minimum. A single letter matches most of the table and the result is
+    // noise, not a search.
+    if (q.length < 2) {
+      res.json({ leads: [] });
+      return;
+    }
+
+    const LIMIT = 20;
+    // `.or()` builds a raw PostgREST filter string in which commas separate conditions and
+    // parentheses group them. Plenty of real company names contain both — "Dias Law Firm,
+    // Inc." — so interpolating the query bare would split one condition into several and
+    // corrupt the filter. Stripping those characters is not an option either, since it would
+    // stop that exact name from ever matching.
+    //
+    // PostgREST treats a double-quoted value as a literal, and JSON.stringify produces
+    // exactly that: a quoted, correctly backslash-escaped string. Using it avoids
+    // hand-rolling escape sequences, which is easy to get subtly wrong.
+    //
+    // `%` and `_` are deliberately left alone: they act as LIKE wildcards, which still match
+    // the literal character the user typed, so nothing breaks either way.
+    const quoted = JSON.stringify(`%${q}%`);
+
+    const { data: leads, error } = await supabase
+      .from("leads")
+      .select("id, company, email, phone, website, campaign_id, contact_method")
+      .eq("user_id", req.userId)
+      .or(`email.ilike.${quoted},company.ilike.${quoted},phone.ilike.${quoted}`)
+      .order("created_at", { ascending: false })
+      .limit(LIMIT);
+
+    if (error) {
+      logger.warn({ error: error.message }, "Lead search failed");
+      res.status(500).json({ error: "Search failed" });
+      return;
+    }
+
+    if (!leads || leads.length === 0) {
+      res.json({ leads: [] });
+      return;
+    }
+
+    // Campaign names in one query rather than one per lead.
+    const campaignIds = [...new Set(leads.map((l: any) => l.campaign_id).filter(Boolean))];
+    const campaignNames = new Map<string, string>();
+    if (campaignIds.length > 0) {
+      const { data: camps } = await supabase
+        .from("campaigns")
+        .select("id, name")
+        .eq("user_id", req.userId)
+        .in("id", campaignIds);
+      for (const c of camps || []) campaignNames.set(c.id, c.name);
+    }
+
+    // Every email for these leads, so each row can say whether marking it would actually
+    // stop anything. A lead whose sequence already finished has nothing to cancel, and saying
+    // so is more useful than offering a button that does nothing.
+    const leadIds = leads.map((l: any) => l.id);
+    // The error IS checked below. Without that, a wrong column name fails silently: `data`
+    // comes back null, every row reports sent=0/pending=0, and the Mark-replied button never
+    // renders — a broken feature that merely looks like "this lead has no emails yet". That
+    // exact bug happened here, on the scheduled-date column name.
+    const { data: emails, error: emailsError } = await supabase
+      .from("emails")
+      .select("id, lead_id, status, replied, sequence_step, scheduled_at, sent_at")
+      .eq("user_id", req.userId)
+      .in("lead_id", leadIds);
+
+    if (emailsError) {
+      logger.warn({ error: emailsError.message }, "Lead search: email lookup failed");
+      res.status(500).json({ error: "Search failed" });
+      return;
+    }
+
+    const byLead = new Map<string, any[]>();
+    for (const e of emails || []) {
+      const list = byLead.get(e.lead_id) || [];
+      list.push(e);
+      byLead.set(e.lead_id, list);
+    }
+
+    const rows = leads.map((lead: any) => {
+      const mine = byLead.get(lead.id) || [];
+      const sent = mine.filter((e) => e.status === "sent");
+      const pending = mine.filter((e) => e.status === "pending");
+
+      // The email to mark is the LATEST one actually sent — that is what the prospect replied
+      // to. Marking it cancels every pending follow-up for the lead, which the existing
+      // mark-reply endpoint already handles by lead_id.
+      const latestSent = sent
+        .slice()
+        .sort((a, b) => new Date(b.sent_at || 0).getTime() - new Date(a.sent_at || 0).getTime())[0];
+
+      const nextPending = pending
+        .slice()
+        .sort((a, b) => new Date(a.scheduled_at || 0).getTime() - new Date(b.scheduled_at || 0).getTime())[0];
+
+      return {
+        leadId: lead.id,
+        company: lead.company,
+        email: lead.email,
+        phone: lead.phone,
+        contactMethod: lead.contact_method,
+        campaignId: lead.campaign_id,
+        campaignName: lead.campaign_id ? campaignNames.get(lead.campaign_id) || null : null,
+        // null when nothing has been sent yet — the UI uses this to decide whether a
+        // Mark-replied button makes any sense for this row.
+        markableEmailId: latestSent?.id || null,
+        alreadyReplied: mine.some((e) => e.replied),
+        sentCount: sent.length,
+        pendingCount: pending.length,
+        lastStep: latestSent?.sequence_step ?? null,
+        nextFollowUpAt: nextPending?.scheduled_at || null,
+      };
+    });
+
+    res.json({ leads: rows });
+  } catch (err) {
+    logger.error({ err }, "Lead search error");
     res.status(500).json({ error: "Internal server error" });
   }
 });

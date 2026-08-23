@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { apiGet, apiPost, apiPostLong, apiPut } from "@/lib/api";
 import SearchBar from "../../SearchBar";
 import Loader from "../../Loader";
@@ -1063,6 +1063,7 @@ function EmailPreviewModal({ emails, onClose, onMarkReply }: { emails: Email[]; 
 
 export default function CampaignDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const campaignId = params.id as string;
   const plan = usePlan();
@@ -1083,7 +1084,10 @@ export default function CampaignDetailPage() {
   const [generatingScripts, setGeneratingScripts] = useState(false);
   const [callScripts, setCallScripts] = useState<{ lead_id: string; company: string; phone?: string; opening: string; script: string }[]>([]);
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
-  const [leadSearch, setLeadSearch] = useState("");
+  // Seeded from ?q= so arriving from the campaigns-list lead search lands with the lead
+  // already filtered. Without this the user typed the same email twice — once to find which
+  // campaign held the lead, then again inside it.
+  const [leadSearch, setLeadSearch] = useState(() => searchParams.get("q") || "");
   const [leadPage, setLeadPage] = useState(1);
   const [detailLead, setDetailLead] = useState<Lead | null>(null);
   const [emailPreviewLeadId, setEmailPreviewLeadId] = useState<string | null>(null);

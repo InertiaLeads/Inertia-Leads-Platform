@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
-import { apiGet, apiDelete } from "@/lib/api";
+import { apiGet, apiPost, apiDelete } from "@/lib/api";
 import SearchBar from "../SearchBar";
 import { CampaignCardsSkeleton } from "../Skeleton";
 import Pagination from "../Pagination";
@@ -18,6 +18,31 @@ interface Campaign {
   created_at: string;
 }
 
+/**
+ * A lead matched by the search box, wherever it lives.
+ *
+ * The search on this page used to match campaign names only, which left one workflow with no
+ * way through it: when a prospect replies, the user has to mark that lead as replied to stop
+ * the remaining follow-ups — but the control for that sits inside one campaign's email modal.
+ * With dozens of campaigns there was no way to tell WHICH campaign held the lead.
+ */
+interface LeadMatch {
+  leadId: string;
+  company: string;
+  email: string | null;
+  phone: string | null;
+  contactMethod: string | null;
+  campaignId: string | null;
+  campaignName: string | null;
+  /** Latest SENT email — what the prospect replied to. Null when nothing has been sent yet. */
+  markableEmailId: string | null;
+  alreadyReplied: boolean;
+  sentCount: number;
+  pendingCount: number;
+  lastStep: number | null;
+  nextFollowUpAt: string | null;
+}
+
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +52,10 @@ export default function CampaignsPage() {
   const [sourceFilter, setSourceFilter] = useState<"all" | "auto_find" | "csv">("all");
   const [page, setPage] = useState(1);
   const PER_PAGE = 10;
+  const [leadMatches, setLeadMatches] = useState<LeadMatch[]>([]);
+  const [leadSearching, setLeadSearching] = useState(false);
+  const [markingLeadId, setMarkingLeadId] = useState<string | null>(null);
+  const [markFailedLeadId, setMarkFailedLeadId] = useState<string | null>(null);
 
   const fetchCampaigns = useCallback(async () => {
     try {
@@ -100,6 +129,67 @@ export default function CampaignsPage() {
 
   // Reset to page 1 when search or filter changes
   useEffect(() => { setPage(1); }, [search, sourceFilter]);
+
+  // Look the query up against LEADS as well as campaign names.
+  //
+  // Debounced, because this hits the network on every keystroke otherwise. Two characters
+  // minimum — one letter matches most of the table and the result is noise. `cancelled`
+  // guards against an earlier, slower response landing after a newer one and overwriting it.
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) {
+      setLeadMatches([]);
+      setLeadSearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLeadSearching(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const data = await apiGet<{ leads: LeadMatch[] }>(`/campaigns/lead-search?q=${encodeURIComponent(q)}`);
+        if (!cancelled) setLeadMatches(data.leads || []);
+      } catch {
+        if (!cancelled) setLeadMatches([]);
+      } finally {
+        if (!cancelled) setLeadSearching(false);
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [search]);
+
+  // Mark a lead as replied without leaving this page.
+  //
+  // Calls the SAME endpoint the campaign email modal uses, so the behaviour is identical —
+  // it flags the email and cancels every pending follow-up for that lead. The modal button is
+  // untouched; this is a second door to the same room.
+  const handleMarkRepliedFromSearch = async (row: LeadMatch) => {
+    if (!row.markableEmailId || markingLeadId) return;
+    setMarkingLeadId(row.leadId);
+    setMarkFailedLeadId(null);
+    try {
+      await apiPost("/send/mark-reply", { emailId: row.markableEmailId });
+      setLeadMatches((prev) =>
+        prev.map((r) =>
+          r.leadId === row.leadId
+            ? { ...r, alreadyReplied: true, pendingCount: 0, nextFollowUpAt: null }
+            : r
+        )
+      );
+      // Cancelling the last pending email can flip a campaign to "completed", so the list
+      // behind the results needs re-reading.
+      fetchCampaigns();
+    } catch {
+      setMarkFailedLeadId(row.leadId);
+    } finally {
+      setMarkingLeadId(null);
+    }
+  };
 
   return (
     <FeatureAccessGuard>
@@ -237,7 +327,7 @@ export default function CampaignsPage() {
       {!loading && campaigns.length > 0 && (
         <div className="flex items-center gap-3 mb-6">
           <SearchBar
-            placeholder="Search campaigns by name or status..."
+            placeholder="Search campaigns, or a lead by email, company or phone..."
             value={search}
             onChange={setSearch}
             className="flex-1"
@@ -256,6 +346,103 @@ export default function CampaignsPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </div>
+        </div>
+      )}
+
+      {/*
+        Leads matching the query, shown ABOVE the campaign list.
+        This is the section that closes the reply-marking loop: the row names the campaign, so
+        the user never has to guess which one holds the lead, and Mark replied acts here
+        directly. Clicking the row deep-links into the campaign with the lead pre-filtered, so
+        the query never has to be typed a second time.
+      */}
+      {!loading && search.trim().length >= 2 && (
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-2.5">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Leads</p>
+            {leadSearching && (
+              <span className="w-3 h-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+            )}
+            {!leadSearching && leadMatches.length > 0 && (
+              <span className="text-[11px] font-semibold text-gray-400">{leadMatches.length} found</span>
+            )}
+          </div>
+
+          {!leadSearching && leadMatches.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-gray-200 py-6 text-center">
+              <p className="text-xs text-gray-400">No leads match &ldquo;{search.trim()}&rdquo;</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {leadMatches.map((row) => {
+                const contact = row.email || row.phone || "No contact info";
+                const busy = markingLeadId === row.leadId;
+
+                // What marking would actually achieve, stated plainly. A row with no pending
+                // follow-ups has nothing to cancel, and saying so is more honest than
+                // offering a button that changes nothing the user cares about.
+                let statusLine: string;
+                if (row.alreadyReplied) statusLine = "Replied — follow-ups cancelled";
+                else if (row.sentCount === 0) statusLine = "Not emailed yet";
+                else if (row.pendingCount > 0)
+                  statusLine = `Step ${row.lastStep ?? row.sentCount} sent · ${row.pendingCount} follow-up${row.pendingCount === 1 ? "" : "s"} pending${
+                    row.nextFollowUpAt
+                      ? ` · next ${new Date(row.nextFollowUpAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+                      : ""
+                  }`;
+                else statusLine = `Step ${row.lastStep ?? row.sentCount} sent · sequence complete`;
+
+                return (
+                  <div
+                    key={row.leadId}
+                    className="bg-white rounded-2xl border border-gray-200 px-4 py-3 flex items-center gap-3 hover:border-gray-300 transition-colors"
+                  >
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-xs font-bold text-violet-700 bg-violet-50 ring-1 ring-violet-100">
+                      {(row.company || "?").charAt(0).toUpperCase()}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-bold text-gray-900 truncate">{row.company || "Unnamed"}</p>
+                        {row.alreadyReplied && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">REPLIED</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 truncate">{contact}</p>
+                      <p className="text-[11px] text-gray-400 mt-0.5 truncate">
+                        {row.campaignName ? <span className="font-semibold text-gray-500">{row.campaignName}</span> : "No campaign"}
+                        {" · "}{statusLine}
+                      </p>
+                      {markFailedLeadId === row.leadId && (
+                        <p className="text-[11px] font-semibold text-rose-600 mt-0.5">Couldn&rsquo;t mark as replied — try again</p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {row.campaignId && (
+                        <Link
+                          href={`/campaigns/${row.campaignId}?q=${encodeURIComponent(row.email || row.company || "")}`}
+                          className="px-3 py-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg hover:border-gray-300 hover:shadow-sm transition-all whitespace-nowrap"
+                        >
+                          Open
+                        </Link>
+                      )}
+                      {!row.alreadyReplied && row.markableEmailId && (
+                        <button
+                          onClick={() => handleMarkRepliedFromSearch(row)}
+                          disabled={busy}
+                          className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg transition-all hover:shadow-md disabled:opacity-60 whitespace-nowrap"
+                          style={{ background: "linear-gradient(135deg, #3d3580 0%, #6962c4 100%)" }}
+                        >
+                          {busy ? "Marking..." : "Mark replied"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -291,7 +478,14 @@ export default function CampaignsPage() {
         <div className="space-y-3">
           {filteredCampaigns.length === 0 && (search || sourceFilter !== "all") ? (
             <div className="bg-white rounded-2xl border border-gray-200 py-12 text-center">
-              <p className="text-sm text-gray-500">No campaigns matching your filters</p>
+              {/* Softened when leads matched: searching an email is EXPECTED to match no
+                  campaign name, and "No campaigns matching your filters" read as a failure
+                  even though the lead the user wanted was sitting right above. */}
+              <p className="text-sm text-gray-500">
+                {leadMatches.length > 0
+                  ? "No campaign names match — see the matching leads above"
+                  : "No campaigns matching your filters"}
+              </p>
             </div>
           ) : null}
           {paginatedCampaigns.map((campaign, index) => {
