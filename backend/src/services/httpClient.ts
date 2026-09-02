@@ -225,3 +225,38 @@ export async function safeProbe(
     }
   }
 }
+
+/**
+ * Is this bare hostname (or literal IP) safe to open a socket to?
+ *
+ * `isUrlSafe` above only accepts full http(s) URLs, so it can't guard non-HTTP
+ * outbound connections. The SMTP connection tester takes a user-supplied host and
+ * port and connects straight to it, which without this check turns an authenticated
+ * endpoint into an internal port scanner (127.0.0.1, 169.254.169.254, RFC1918).
+ *
+ * Both address families are resolved and EVERY returned record is checked — a host
+ * with a public A record and an internal AAAA record must still be rejected, and the
+ * A/AAAA fallback pattern used by isUrlSafe would miss that.
+ */
+export async function isHostSafe(host: string): Promise<boolean> {
+  const hostname = (host || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!hostname) return false;
+
+  // Obvious loopback names never reach DNS on some resolvers — reject by name too.
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+    return false;
+  }
+
+  // A literal IP skips DNS entirely, so validate it directly.
+  if (net.isIP(hostname)) return !isBlockedAddress(hostname);
+
+  const [v4, v6] = await Promise.all([
+    dns.resolve4(hostname).catch(() => [] as string[]),
+    dns.resolve6(hostname).catch(() => [] as string[]),
+  ]);
+
+  // Unresolvable host — fail closed.
+  if (v4.length === 0 && v6.length === 0) return false;
+
+  return ![...v4, ...v6].some((ip) => isBlockedAddress(ip));
+}

@@ -21,7 +21,8 @@ router.post("/test", authMiddleware, async (req: AuthenticatedRequest, res) => {
     if (result.success) {
       res.json({ message: "SMTP connection successful" });
     } else {
-      res.status(400).json({ error: `Connection failed: ${result.error}` });
+      // result.error is already a fixed, non-revealing category (see describeSmtpFailure).
+      res.status(400).json({ error: result.error });
     }
   } catch {
     res.status(500).json({ error: "Failed to test SMTP connection" });
@@ -64,7 +65,7 @@ router.post("/accounts", authMiddleware, async (req: AuthenticatedRequest, res) 
     // Test connection first
     const testResult = await testSmtpConnection({ email, host, port, username, password, useTls });
     if (!testResult.success) {
-      res.status(400).json({ error: `SMTP connection failed: ${testResult.error}. Please verify your credentials.` });
+      res.status(400).json({ error: testResult.error });
       return;
     }
 

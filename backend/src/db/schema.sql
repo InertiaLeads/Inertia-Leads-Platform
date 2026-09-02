@@ -482,8 +482,11 @@ alter table audit_views enable row level security;
 create policy "Users can view their own audit views"
   on audit_views for select using (auth.uid() = user_id);
 
-create policy "Service can insert audit views"
-  on audit_views for insert with check (true);
+-- NOTE: there is deliberately NO insert policy here. Views are recorded only by the
+-- backend (service role), which bypasses RLS. A policy of `with check (true)` would
+-- grant INSERT to the anon/authenticated PostgREST roles as well, letting any logged-in
+-- user forge view rows for an arbitrary lead_id/user_id — fabricating hot-lead
+-- engagement inside another tenant's dashboard.
 
 create policy "Users can delete their own audit views"
   on audit_views for delete using (auth.uid() = user_id);
@@ -539,8 +542,9 @@ alter table audit_logs enable row level security;
 create policy "Users can view their own audit logs"
   on audit_logs for select using (auth.uid() = user_id);
 
-create policy "Service can insert audit logs"
-  on audit_logs for insert with check (true);
+-- NOTE: no insert policy, for the same reason as audit_views above. This table is the
+-- security audit trail; a `with check (true)` policy would let any user forge or flood
+-- entries through the public anon key. Only the service-role backend writes here.
 
 -- Auto-cleanup: delete audit logs older than 90 days (run via pg_cron or scheduled function)
 -- select delete from audit_logs where created_at < now() - interval '90 days';
@@ -645,3 +649,33 @@ alter table user_plans add column if not exists dodo_customer_id text;
 -- =============================================
 alter table user_plans add column if not exists pending_plan_change_from text;
 alter table user_plans add column if not exists pending_plan_change_at timestamp with time zone;
+
+-- =============================================
+-- MIGRATION (2026-09-02): drop world-open INSERT policies on the audit tables
+-- Idempotent — safe to run on an existing database. Run this block on any DB that was
+-- created before today; the table definitions above already reflect the end state.
+--
+-- Both tables carried:
+--     create policy "Service can insert ..." on <table> for insert with check (true);
+--
+-- `with check (true)` is NOT "service role only" — RLS policies apply to the anon and
+-- authenticated PostgREST roles, and the service role bypasses RLS entirely and never
+-- needed a policy. So these two lines granted unrestricted INSERT to anyone holding the
+-- public anon key (i.e. every signed-up user, straight from the browser):
+--
+--   * audit_views — forge "this lead opened your report" rows with any lead_id/user_id,
+--     injecting fake hot-lead engagement into another tenant's dashboard and inflating
+--     the Hot Leads page.
+--   * audit_logs — forge or flood the security audit trail, destroying its evidentiary
+--     value and letting real activity be buried.
+--
+-- Dropping them changes nothing for the app: every write to these tables goes through
+-- the service-role backend (utils/auditLog.ts, routes/audit.ts), which is unaffected by
+-- RLS. The existing SELECT/DELETE owner policies are deliberately left in place.
+-- =============================================
+drop policy if exists "Service can insert audit views" on audit_views;
+drop policy if exists "Service can insert audit logs" on audit_logs;
+
+-- Verify (expect: no rows with cmd = 'INSERT' for either table):
+--   select tablename, policyname, cmd from pg_policies
+--   where tablename in ('audit_views','audit_logs') order by tablename, cmd;

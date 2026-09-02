@@ -2,6 +2,33 @@ import nodemailer from "nodemailer";
 import supabase from "./supabase";
 import logger from "../utils/logger";
 import { encrypt, decrypt } from "../utils/encryption";
+import { isHostSafe } from "./httpClient";
+
+// Ports a real mail submission service listens on. Anything else is either a
+// non-SMTP service (the thing an internal port scan is actually hunting for) or a
+// misconfiguration, so it is refused rather than dialled.
+const ALLOWED_SMTP_PORTS = [25, 465, 587, 2525];
+
+/**
+ * Map a driver error to one of a few fixed categories.
+ *
+ * The raw nodemailer/socket error was previously returned to the caller verbatim,
+ * which made this endpoint an oracle: connection-refused vs timeout vs TLS-handshake
+ * distinguishes an open internal port from a closed one. These buckets still tell a
+ * legitimate user which field to correct.
+ */
+function describeSmtpFailure(err: unknown): string {
+  const code = String((err as { code?: string })?.code || "");
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (code === "EAUTH" || /auth|credential|password|username|535|534/i.test(message)) {
+    return "Authentication failed — check your username and password (app passwords are usually required).";
+  }
+  if (code === "ESOCKET" || /certificate|self.signed|tls|ssl/i.test(message)) {
+    return "Secure connection failed — check the port and whether your provider requires SSL or STARTTLS.";
+  }
+  return "Could not reach the mail server — check the host and port.";
+}
 
 // =============================================
 // SMTP Account Management
@@ -19,6 +46,27 @@ export interface SmtpAccountInput {
 
 // Test SMTP connection before saving
 export async function testSmtpConnection(config: SmtpAccountInput): Promise<{ success: boolean; error?: string }> {
+  // Refuse non-submission ports BEFORE opening a socket. Combined with the host check
+  // below this is what stops the endpoint being used to probe internal services.
+  const port = Number(config.port);
+  if (!ALLOWED_SMTP_PORTS.includes(port)) {
+    return {
+      success: false,
+      error: `Unsupported SMTP port. Use one of: ${ALLOWED_SMTP_PORTS.join(", ")}.`,
+    };
+  }
+
+  // The host must resolve to a PUBLIC address. Without this, an authenticated user can
+  // point the tester at 127.0.0.1, 169.254.169.254 (cloud metadata) or any RFC1918
+  // address and read connection outcomes — an internal port scanner behind a login.
+  if (!(await isHostSafe(config.host))) {
+    logger.warn({ host: config.host, port }, "Blocked SMTP connection to non-public host");
+    return {
+      success: false,
+      error: "That mail server host is not reachable. Enter a public SMTP hostname (for example smtp.zoho.com).",
+    };
+  }
+
   try {
     const transporter = nodemailer.createTransport({
       host: config.host,
@@ -39,9 +87,10 @@ export async function testSmtpConnection(config: SmtpAccountInput): Promise<{ su
     transporter.close();
     return { success: true };
   } catch (err) {
+    // Full detail stays in our logs; the caller gets a category, never the raw error.
     const msg = err instanceof Error ? err.message : "Connection failed";
     logger.error({ error: msg, host: config.host, port: config.port }, "SMTP connection test failed");
-    return { success: false, error: msg };
+    return { success: false, error: describeSmtpFailure(err) };
   }
 }
 

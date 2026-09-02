@@ -23,6 +23,17 @@ import { getDodoEnvironment } from "./services/dodo";
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Trust exactly ONE reverse proxy (Railway/Render/Vercel terminate TLS in front of us).
+//
+// Without this, req.ip is the proxy socket address for EVERY request, so all IP-keyed
+// rate limiting collapses into a single global bucket: one client could exhaust the
+// 300/15min window and 429 every visitor of every customer's public audit report.
+//
+// The value is 1, not `true`. `true` trusts the whole X-Forwarded-For chain, letting a
+// client prepend a forged address and mint unlimited rate-limit identities. Hop count 1
+// takes the address the platform's own proxy appended, which a client cannot control.
+app.set("trust proxy", 1);
+
 // Security headers
 app.use(helmet({
   contentSecurityPolicy: {
