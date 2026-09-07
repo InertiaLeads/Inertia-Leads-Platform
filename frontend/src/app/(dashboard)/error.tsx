@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import * as Sentry from "@sentry/nextjs";
 
 export default function DashboardError({
   error,
@@ -11,6 +12,9 @@ export default function DashboardError({
   reset: () => void;
 }) {
   useEffect(() => {
+    // Without this the dashboard — where users actually spend their time — reports
+    // nothing: an error caught by a boundary never reaches Sentry's global handler.
+    Sentry.captureException(error);
     console.error("Dashboard error:", error);
   }, [error]);
 

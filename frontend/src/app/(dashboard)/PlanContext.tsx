@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import * as Sentry from "@sentry/nextjs";
 import { apiGet } from "@/lib/api";
 
 interface Features {
@@ -80,7 +81,13 @@ export function PlanProvider({ children }: { children: ReactNode }) {
         // real gate; this only decides what the UI unlocks.
         // User can access features if: trialing (not expired), active, or cancelled with remaining period
         const canAccess = (["trialing", "active"].includes(status) && !trialExpired) || !!cancelledWithAccess;
-        
+
+        // Tag errors with the plan state the user was in. Billing/quota bugs are the
+        // ones where "which plan?" is the first question, and these are already
+        // loaded here — no extra request. Non-PII: plan tier and status only.
+        Sentry.setTag("plan", data.planLabel || "unknown");
+        Sentry.setTag("subscription_status", status);
+
         setPlanData({
           planLabel: data.planLabel,
           subscriptionStatus: status,

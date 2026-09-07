@@ -82,6 +82,19 @@ export default function PrivacyPolicyPage() {
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Payment Information</h3>
                 <p>Payment processing is handled entirely by Dodo Payments. We do not store your credit card number, CVV, or full payment details. We only receive a customer ID and subscription status from Dodo Payments to manage your plan.</p>
+
+                <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Error and Performance Monitoring</h3>
+                <p className="mb-3">We use Sentry, operated by Functional Software, Inc. (&quot;Sentry&quot;), to monitor application errors and performance. This helps us identify and fix bugs, crashes, and technical issues to improve your experience.</p>
+                <p className="mb-2">When you use our Service and an error occurs, Sentry may automatically collect:</p>
+                <ul className="list-disc list-inside space-y-2 ml-1 mb-3">
+                  <li>Your user ID and email address, to identify affected users</li>
+                  <li>Your subscription plan and status</li>
+                  <li>Browser type, operating system, and device information</li>
+                  <li>The page you were on and the actions you took before the error</li>
+                  <li>Technical error details such as stack traces and error messages</li>
+                  <li>A replay of your session — a video-like reconstruction of your interactions with the page — recorded for a small sample of sessions and for sessions in which an error occurs. Text you type into form fields and other page content are masked by default in these recordings</li>
+                </ul>
+                <p>Sentry processes this data on our behalf to help us maintain and improve the Service. It is never used for advertising or profiling, and is never sold. Sentry stores this data on servers in the United States. For more information, see Sentry&apos;s privacy policy at <a href="https://sentry.io/privacy/" target="_blank" rel="noopener noreferrer" className="text-violet-300 hover:underline">sentry.io/privacy</a>.</p>
               </div>
 
               {/* Section 2 */}
@@ -203,6 +216,11 @@ export default function PrivacyPolicyPage() {
                         <td className="px-4 py-2.5">United States</td>
                         <td className="px-4 py-2.5">Google&apos;s approved transfer mechanisms</td>
                       </tr>
+                      <tr>
+                        <td className="px-4 py-2.5 font-medium text-white/80">Sentry</td>
+                        <td className="px-4 py-2.5">United States</td>
+                        <td className="px-4 py-2.5">Standard Contractual Clauses</td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -256,6 +274,11 @@ export default function PrivacyPolicyPage() {
                         <td className="px-4 py-2.5 font-medium text-white/80">Vercel</td>
                         <td className="px-4 py-2.5">Frontend hosting</td>
                         <td className="px-4 py-2.5">No personal data stored</td>
+                      </tr>
+                      <tr>
+                        <td className="px-4 py-2.5 font-medium text-white/80">Sentry</td>
+                        <td className="px-4 py-2.5">Error and performance monitoring</td>
+                        <td className="px-4 py-2.5">User ID, email address, plan and subscription status, device and browser info, error diagnostics, sampled session replays</td>
                       </tr>
                     </tbody>
                   </table>
