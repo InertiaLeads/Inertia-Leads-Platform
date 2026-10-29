@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { apiGet, apiPost, apiPostLong, apiPut } from "@/lib/api";
 import SearchBar from "../../SearchBar";
@@ -420,32 +420,6 @@ const TIMEZONE_SEARCH_ENTRIES: { value: string; label: string }[] = [
   { value: "SOUTH_AFRICA", label: "Zimbabwe (CAT)" },
   { value: "SOUTH_AFRICA", label: "Mozambique (CAT)" },
 ];
-
-// Campaign send-timezone key -> IANA zone, used only to DISPLAY times (e.g. when a moved-up
-// follow-up will go out) in the lead's local time, matching how the backend schedules it.
-const TZ_IANA: Record<string, string> = {
-  US_EAST: "America/New_York", US_CENTRAL: "America/Chicago", US_MOUNTAIN: "America/Denver",
-  US_WEST: "America/Los_Angeles", US_ALASKA: "America/Anchorage", US_HAWAII: "Pacific/Honolulu",
-  CA_ATLANTIC: "America/Halifax", CA_NEWFOUNDLAND: "America/St_Johns",
-  UK: "Europe/London", EU_CENTRAL: "Europe/Berlin", EU_EAST: "Europe/Athens",
-  ARABIA: "Asia/Riyadh", UAE: "Asia/Dubai", INDIA: "Asia/Kolkata",
-  SINGAPORE: "Asia/Singapore", PHILIPPINES: "Asia/Manila", JAPAN: "Asia/Tokyo",
-  AU_WEST: "Australia/Perth", AU_CENTRAL: "Australia/Adelaide", AU_EAST: "Australia/Sydney",
-  NZ: "Pacific/Auckland", BRAZIL: "America/Sao_Paulo", SOUTH_AFRICA: "Africa/Johannesburg",
-};
-
-// "Today 8:00 AM" / "Tomorrow 8:00 AM" / "Nov 3, 8:00 AM" in the campaign's timezone.
-function formatSendTime(iso: string, tzKey?: string | null): string {
-  const timeZone = TZ_IANA[tzKey || "US_EAST"] || "America/New_York";
-  const d = new Date(iso);
-  const dayKey = (x: Date) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(x);
-  const time = new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", minute: "2-digit" }).format(d);
-  const now = new Date();
-  if (dayKey(d) === dayKey(now)) return `Today ${time}`;
-  if (dayKey(d) === dayKey(new Date(now.getTime() + 24 * 60 * 60 * 1000))) return `Tomorrow ${time}`;
-  const date = new Intl.DateTimeFormat("en-US", { timeZone, month: "short", day: "numeric" }).format(d);
-  return `${date}, ${time}`;
-}
 
 // ===== Progress Tracker =====
 interface ProgressStep {
@@ -2089,10 +2063,9 @@ export default function CampaignDetailPage() {
                           </td>
                           <td className="pl-2 pr-4 py-3.5 text-sm">
                             {(() => {
-                              // Three short lines, each answering one question:
+                              // Two lines:
                               //   1. Where is this lead?   stage + date (+ Hot)
-                              //   2. What did they do?     opens / clicks (Starter: audit report views)
-                              //   3. What happens next?    moved-up follow-up / paused / stopped
+                              //   2. What did they do?     email opens / audit link clicks (Starter: audit report views)
                               const leadEmails = emails.filter(e => e.lead_id === lead.id);
                               const wasSent = !!lead.contacted || leadEmails.some(e => e.status === "sent");
                               const repliedAt = leadEmails.find(e => e.replied_at)?.replied_at;
@@ -2106,26 +2079,6 @@ export default function CampaignDetailPage() {
                                 : wasSent
                                 ? { label: "Contacted", date: lead.contacted_at, cls: "bg-blue-50 text-blue-700 ring-blue-200" }
                                 : { label: "Uncontacted", date: null, cls: "bg-gray-50 text-gray-600 ring-gray-200" };
-
-                              // Next step: one line, the most important state wins.
-                              let next: { tone: string; icon: ReactNode; text: string; title: string } | null = null;
-                              if (eng?.flags.cancelled) {
-                                next = { tone: "text-red-600", text: "Follow-ups stopped", title: "Remaining follow-ups were cancelled (not interested, unsubscribe or bounce).",
-                                  icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /> };
-                              } else if (eng?.flags.paused) {
-                                const until = eng.pausedUntil ? new Date(eng.pausedUntil).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : null;
-                                next = { tone: "text-amber-600", text: until ? `Paused until ${until}` : "Paused", title: "Paused after an out-of-office reply. Change the date from the Inbox.",
-                                  icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 9v6m4-6v6" /> };
-                              } else if (eng && !replied) {
-                                const movedUp = leadEmails
-                                  .filter(e => e.status === "pending" && (e.sequence_step || 1) > 1 && e.accelerated_at && e.scheduled_at)
-                                  .sort((x, y) => new Date(x.scheduled_at!).getTime() - new Date(y.scheduled_at!).getTime())[0];
-                                if (movedUp) {
-                                  next = { tone: "text-blue-600", text: `Follow-up ${(movedUp.sequence_step || 2) - 1} · ${formatSendTime(movedUp.scheduled_at!, campaign?.send_timezone)}`,
-                                    title: "Moved up by Smart Sequences after the lead engaged. Time shown in the campaign's timezone.",
-                                    icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /> };
-                                }
-                              }
 
                               return (
                                 <div className="flex flex-col items-start gap-1">
@@ -2144,38 +2097,41 @@ export default function CampaignDetailPage() {
                                     )}
                                   </div>
 
-                                  {/* 2. Engagement */}
-                                  {wasSent && eng && (
-                                    <div className="flex items-center gap-3 text-xs font-medium text-gray-600 whitespace-nowrap"
-                                      title={eng.lastOpened ? `Last opened ${new Date(eng.lastOpened).toLocaleString()}${eng.lastClicked ? ` · last click ${new Date(eng.lastClicked).toLocaleString()}` : ""}` : "No opens recorded yet"}>
-                                      <span className="inline-flex items-center gap-1">
-                                        <svg className={`w-4 h-4 ${eng.opens > 0 ? "text-orange-500" : "text-gray-300"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                        {eng.opens > 0 ? <span><b className="font-bold text-gray-900">{eng.opens}</b> {eng.opens === 1 ? "open" : "opens"}</span> : <span className="text-gray-400">Not opened yet</span>}
+                                  {/* 2. Engagement: "Email: N" (opens) and "Audit: N" (audit link clicks). Each box is
+                                      grey at 0 and green once it is 1 or more. Starter (no tracking) shows audit report views. */}
+                                  {wasSent && (eng || !trackingEnabled) && (() => {
+                                    const box = (n: number) => n > 0
+                                      ? { cls: "bg-emerald-50 text-emerald-800 ring-emerald-200", icon: "text-emerald-500" }
+                                      : { cls: "bg-gray-50 text-gray-400 ring-gray-200", icon: "text-gray-300" };
+                                    const chip = "inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-medium ring-1";
+                                    if (eng) {
+                                      const e = box(eng.opens), c = box(eng.clicks);
+                                      return (
+                                        <div className="flex items-center gap-1.5 flex-wrap"
+                                          title={`Email = times the email was opened · Audit = times the audit link was clicked${eng.lastOpened ? `
+Last opened ${new Date(eng.lastOpened).toLocaleString()}` : ""}${eng.lastClicked ? `
+Last audit click ${new Date(eng.lastClicked).toLocaleString()}` : ""}`}>
+                                          <span className={`${chip} ${e.cls}`}>
+                                            <svg className={`w-3.5 h-3.5 ${e.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                            Email: <b className="font-bold">{eng.opens}</b>
+                                          </span>
+                                          <span className={`${chip} ${c.cls}`}>
+                                            <svg className={`w-3.5 h-3.5 ${c.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
+                                            Audit: <b className="font-bold">{eng.clicks}</b>
+                                          </span>
+                                        </div>
+                                      );
+                                    }
+                                    const v = box(views);
+                                    return (
+                                      <span className={`${chip} ${v.cls}`}
+                                        title={`Audit = times the audit report was viewed${auditViews[lead.id]?.lastViewed ? `
+Last viewed ${new Date(auditViews[lead.id].lastViewed).toLocaleString()}` : ""}`}>
+                                        <svg className={`w-3.5 h-3.5 ${v.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                        Audit: <b className="font-bold">{views}</b>
                                       </span>
-                                      {eng.clicks > 0 && (
-                                        <span className="inline-flex items-center gap-1">
-                                          <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
-                                          <span><b className="font-bold text-gray-900">{eng.clicks}</b> {eng.clicks === 1 ? "click" : "clicks"}</span>
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                  {/* Starter (no tracking): the audit report view count is the only engagement signal */}
-                                  {!trackingEnabled && views > 0 && (
-                                    <div className="inline-flex items-center gap-1 text-xs font-medium text-gray-600 whitespace-nowrap"
-                                      title={auditViews[lead.id]?.lastViewed ? `Last viewed ${new Date(auditViews[lead.id].lastViewed).toLocaleString()}` : undefined}>
-                                      <svg className="w-3.5 h-3.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                      Report viewed <b className="font-bold text-gray-900">{views}×</b>
-                                    </div>
-                                  )}
-
-                                  {/* 3. Next step */}
-                                  {next && (
-                                    <div className={`inline-flex items-center gap-1 text-[11px] font-normal whitespace-nowrap ${next.tone}`} title={next.title}>
-                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">{next.icon}</svg>
-                                      {next.text}
-                                    </div>
-                                  )}
+                                    );
+                                  })()}
                                 </div>
                               );
                             })()}
@@ -2200,6 +2156,23 @@ export default function CampaignDetailPage() {
                               if (leadEmails.length === 0) return <span className="text-gray-300 text-xs">—</span>;
                               const hasReply = leadEmails.some(e => e.replied);
                               const latest = leadEmails.sort((a, b) => (b.sequence_step || 1) - (a.sequence_step || 1))[0];
+                              const stoppedEmail = leadEmails.find(e => e.status === "cancelled" && e.triggered_by === "cancelled");
+                              if (stoppedEmail) {
+                                const why = /bounce/i.test(stoppedEmail.error_log || "") ? "the email bounced"
+                                  : /unsubscribe/i.test(stoppedEmail.error_log || "") ? "the lead asked to unsubscribe"
+                                  : "the lead isn't interested";
+                                return (
+                                  <button
+                                    onClick={() => setEmailPreviewLeadId(lead.id)}
+                                    title={`Remaining follow-ups were stopped because ${why}.`}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg ring-1 transition-colors bg-gray-50 text-gray-500 ring-gray-200 hover:bg-gray-100"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                                    Stopped
+                                    {leadEmails.length > 1 && <span className="text-[9px] opacity-70">+{leadEmails.length - 1}</span>}
+                                  </button>
+                                );
+                              }
                               return (
                                 <button
                                   onClick={() => setEmailPreviewLeadId(lead.id)}
