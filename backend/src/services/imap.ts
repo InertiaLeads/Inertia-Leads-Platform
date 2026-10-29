@@ -128,7 +128,7 @@ export interface ImapCredentialInput {
 }
 
 function buildClient(cfg: { host: string; port: number; username: string; password: string; useTls?: boolean }, verifyOnly: boolean): ImapFlow {
-  return new ImapFlow({
+  const client = new ImapFlow({
     host: cfg.host,
     port: cfg.port,
     secure: cfg.port === 993,
@@ -142,6 +142,13 @@ function buildClient(cfg: { host: string; port: number; username: string; passwo
     socketTimeout: 45000,
     clientInfo: { name: "Inertia Leads", vendor: "Inertia Leads" },
   });
+  // ImapFlow reports socket problems (e.g. "Socket timeout" on a connection left open after a
+  // failed login) as an 'error' EVENT. With no listener, Node throws it as an uncaught exception
+  // and the whole backend shuts down. Log it instead; the awaiting call still sees its own failure.
+  client.on("error", (err: Error) => {
+    logger.warn({ host: cfg.host, error: err?.message }, "IMAP connection error (handled)");
+  });
+  return client;
 }
 
 // Validate + open + authenticate, then disconnect. Returns a fixed-category error message.
@@ -213,7 +220,11 @@ export async function addImapCredential(userId: string, cfg: ImapCredentialInput
 
   if (existing) {
     // Re-connect: replace credentials, keep the fetch cursor so old mail isn't re-ingested.
-    await supabase.from("imap_credentials").update(row).eq("id", existing.id);
+    const { error: updateErr } = await supabase.from("imap_credentials").update(row).eq("id", existing.id);
+    if (updateErr) {
+      logger.error({ userId, code: updateErr.code, error: updateErr.message, details: updateErr.details, hint: updateErr.hint }, "Failed to update IMAP credential");
+      throw new Error("Failed to store inbox credentials");
+    }
     return { id: existing.id, email };
   }
 
@@ -222,7 +233,11 @@ export async function addImapCredential(userId: string, cfg: ImapCredentialInput
     .insert({ user_id: userId, email, ...row })
     .select("id, email")
     .single();
-  if (error || !data) throw new Error("Failed to store inbox credentials");
+  if (error || !data) {
+    // Log the database's own reason (never the password) so a failed save is diagnosable.
+    logger.error({ userId, code: error?.code, error: error?.message, details: error?.details, hint: error?.hint }, "Failed to insert IMAP credential");
+    throw new Error("Failed to store inbox credentials");
+  }
   return { id: data.id, email: data.email };
 }
 
