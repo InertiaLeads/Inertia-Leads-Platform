@@ -5,6 +5,8 @@ import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import { SettingsAccountSkeleton } from "../Skeleton";
 import PricingModal from "./PricingModal";
+import InboxConnectionCard from "./InboxConnectionCard";
+import { LIST_PRICES, listPrice } from "@/lib/pricing";
 
 // ===== Toast Notification System =====
 type ToastType = "success" | "error" | "info";
@@ -212,6 +214,8 @@ export default function SettingsPage() {
   const [smtpAccounts, setSmtpAccounts] = useState<SmtpAccount[]>([]);
   const [maxInboxes, setMaxInboxes] = useState(1);
   const [plan, setPlan] = useState("starter");
+  // Plan price from the backend (single list price for every user).
+  const [priceMonthly, setPriceMonthly] = useState<number | null>(null);
   const [hasPlan, setHasPlan] = useState(true);
   const [isExpired, setIsExpired] = useState(false);
   const [isTrialExpired, setIsTrialExpired] = useState(false);
@@ -408,7 +412,7 @@ export default function SettingsPage() {
     };
     loadProfile();
     // Load service type and subscription status from stats
-    apiGet<{ serviceType?: string; subscriptionStatus?: string; isOnTrial?: boolean; trialDaysLeft?: number; trialEndsAt?: string | null; currentPeriodEnd?: string; currentPeriodStart?: string; timezone?: string }>("/stats").then(async (data) => {
+    apiGet<{ serviceType?: string; subscriptionStatus?: string; isOnTrial?: boolean; trialDaysLeft?: number; trialEndsAt?: string | null; currentPeriodEnd?: string; currentPeriodStart?: string; timezone?: string; priceMonthly?: number }>("/stats").then(async (data) => {
       // A brand-new user has NOT chosen a service yet — even though the DB carries a
       // "web_dev" fallback, we must not pre-select it for them. Only show a selected
       // service once they've explicitly picked one (tracked by the service_type_set flag).
@@ -432,6 +436,7 @@ export default function SettingsPage() {
       setPeriodStartDate(data.currentPeriodStart || null);
       setTrialEndsAt(data.trialEndsAt || null);
       setUserTimezone(data.timezone || null);
+      setPriceMonthly(typeof data.priceMonthly === "number" ? data.priceMonthly : null);
 
       if (data.subscriptionStatus === "cancelled" && data.currentPeriodEnd && new Date(data.currentPeriodEnd) > new Date()) {
         // Cancelled but still has access until period ends
@@ -1261,7 +1266,7 @@ export default function SettingsPage() {
                           <p className="text-[10px] text-gray-400 mb-0.5">Previous plan</p>
                           <span className="text-sm font-bold text-gray-900 capitalize">{plan}</span>
                           <span className="text-xs text-gray-400 ml-1.5">
-                            {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}/mo
+                            {`$${priceMonthly ?? listPrice(plan)}`}/mo
                           </span>
                         </>
                       )}
@@ -1367,14 +1372,14 @@ export default function SettingsPage() {
                       </div>
                       <div className="text-right">
                         <p className="text-[10px] text-gray-400">Days left: <span className="text-amber-600 font-semibold">{trialDaysLeft ?? "—"}</span></p>
-                        <p className="text-[10px] text-gray-400">Then <span className="text-gray-600 font-medium">$79/mo</span> when you choose a plan</p>
+                        <p className="text-[10px] text-gray-400">Then <span className="text-gray-600 font-medium">${LIST_PRICES.growth}/mo</span> when you choose a plan</p>
                       </div>
                     </div>
                   ) : (
                     <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-100">
                       <div>
                         <span className="text-2xl font-extrabold text-gray-900">
-                          {plan === "starter" ? "$39" : plan === "growth" ? "$79" : "$129"}
+                          {`$${priceMonthly ?? listPrice(plan)}`}
                         </span>
                         <span className="text-xs text-gray-400 ml-1">per month</span>
                       </div>
@@ -1977,6 +1982,15 @@ export default function SettingsPage() {
             )}
           </div>
         </div>
+
+        {/* Inbox Connection (V2 Tier 1 — IMAP reply sync for the Unified Inbox) */}
+        <InboxConnectionCard
+          sendingAccounts={[
+            ...gmailAccounts.map((a) => ({ id: a.id, email: a.email, type: "gmail" as const })),
+            ...smtpAccounts.map((a) => ({ id: a.id, email: a.email, type: "smtp" as const })),
+          ]}
+          onToast={(msg, type) => toast.addToast(msg, type)}
+        />
 
       </div>
     </div>

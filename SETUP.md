@@ -207,3 +207,74 @@ For ALL common issues, see: **TROUBLESHOOTING.md**
 5. Setup email follow-ups (toggle in campaign settings)
 
 Enjoy! 🎉
+
+---
+
+## 🚀 V2 Tier 1 — Tracking, Unified Inbox, AI Replies, Smart Sequences
+
+Deploy order matters: **database → backend → frontend**. Existing V1 behaviour is unchanged
+until the new columns exist, so run the migration first.
+
+### 1. Database migration (Supabase SQL Editor, dev AND production)
+
+Run the whole file `backend/src/db/migrations/2026-09-24_v2_tier1.sql`. It is idempotent.
+It adds:
+
+- `email_events`, `imap_credentials`, `replies` tables (RLS: owner SELECT only)
+- tracking / smart-sequence columns on `emails`, toggle + config on `campaigns`
+- `auto_paused_at` / `auto_pause_reason` on `user_plans`
+- `record_email_open` / `record_email_click` RPCs and the `reply_fetch` job-lock row
+
+Verify with the queries in the comment block at the end of the file.
+
+### 2. Backend environment (Railway)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `TRACKING_URL` | Recommended | Public origin used in tracking pixels and click links, e.g. `https://track.yourdomain.com`. Falls back to `BACKEND_URL`. |
+| `BACKEND_URL` | Yes (already) | Fallback for tracking links and unsubscribe links. |
+
+**Tracking subdomain (do this before real traffic):**
+
+1. DNS: add a CNAME `track` → your Railway backend hostname.
+2. Railway → backend service → Settings → Domains → add `track.yourdomain.com` (SSL is automatic).
+3. Set `TRACKING_URL=https://track.yourdomain.com` and redeploy.
+
+Why a separate subdomain: every user's tracked links share this host. If one abusive
+tenant gets it flagged, you point a fresh subdomain at Railway and change one variable —
+the app, API and audit-report domains are never affected. Keep the old subdomain alive so
+links in already-sent emails still redirect.
+
+No new keys are needed for the inbox: reply fetching uses IMAP with **app passwords**
+supplied by each user in Settings → Inbox Connection (no Gmail read scope, no CASA review).
+
+### 3. Frontend (Vercel)
+
+No new environment variables. New route: `/inbox` (Growth & Agency; trial unlocks it).
+
+### 4. What changes for existing users
+
+- Outreach emails are now sent as **text + HTML** (the HTML mirrors the text exactly and
+  carries the open pixel + tracked links). Stored bodies and AI prompts are untouched.
+- Manual replies sent from the Inbox are plain text with **no** tracking.
+- Smart sequences are **off** per campaign until the user turns them on. Out-of-office
+  pauses, unsubscribe and not-interested cancellations apply whenever an inbox is connected.
+- Safety brake: if a user's bounces + unsubscribe replies exceed 10% of a day's sends
+  (minimum 30 sends), their running campaigns move to Draft and the dashboard shows why.
+
+### 5. Tier 1 pricing (Growth $99, Agency $149, Starter unchanged at $39)
+
+Tier 1 features (tracking, smart sequences, unified inbox, AI reply sorting) are Growth and
+Agency only; Starter is locked like Hot Leads and CSV upload. The free trial unlocks everything.
+One price list for every user — the app shows $39 / $99 / $149 to everyone.
+
+1. **Dodo (live mode, then test mode):** change the Growth product price to $98.99 and the
+   Agency product price to $148.99. Check in Dodo whether existing subscriptions pick up the
+   new price at their next renewal; if they do not, existing subscribers must be moved to the
+   new price in Dodo, otherwise they keep being charged the old amount.
+2. If you create NEW products instead of editing the old ones, put the new ID first in
+   Railway and keep the old one after a comma, e.g.
+   `DODO_GROWTH_PRODUCT_ID=pdt_newGrowth,pdt_oldGrowth`, so older subscriptions are still
+   recognised as Growth.
+3. Tell existing customers about the change before their next renewal.
+4. **Website:** update the public pricing page (outside this repo) to match.

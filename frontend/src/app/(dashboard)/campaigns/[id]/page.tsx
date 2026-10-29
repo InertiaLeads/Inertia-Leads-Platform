@@ -10,6 +10,25 @@ import { usePlan } from "../../PlanContext";
 import LockedFeatureModal from "../../LockedFeatureModal";
 import SetupRequiredModal, { SetupRequiredType } from "../../SetupRequiredModal";
 import { createClient } from "@/lib/supabase/client";
+import SmartSequencePanel, { SmartConfig } from "./SmartSequencePanel";
+
+// V2 Tier 1: per-lead engagement from GET /api/tracking/campaign/:id
+interface LeadEngagement {
+  opens: number;
+  clicks: number;
+  lastOpened: string | null;
+  lastClicked: string | null;
+  hot: boolean;
+  flags: { resent: boolean; accelerated: boolean; paused: boolean; cancelled: boolean };
+  pausedUntil?: string | null;
+}
+interface TrackingStats {
+  totals: { sent: number; uniqueOpened: number; uniqueClicked: number; totalOpens: number; totalClicks: number; openRate: number; clickRate: number };
+  perLead: Record<string, LeadEngagement>;
+  mostEngaged: Array<{ leadId: string; company: string; email: string; opens: number; clicks: number }>;
+  hotThreshold: number;
+  smartSequencesEnabled: boolean;
+}
 
 // ===== Custom Styled Dropdown =====
 function CustomSelect<T extends string>({
@@ -20,18 +39,36 @@ function CustomSelect<T extends string>({
   disabled,
   className,
   placeholder,
+  persistKey,
 }: {
   value: T;
-  onChange: (val: T) => void;
+  onChange: (val: T, label?: string) => void;
   options: { value: T; label: string }[];
   searchEntries?: { value: T; label: string }[];
   disabled?: boolean;
   className?: string;
   placeholder?: string;
+  // Several search entries can map to one stored value (e.g. Germany/France → EU_CENTRAL).
+  // With a persistKey the exact entry the user picked is remembered in this browser so the
+  // dropdown still reads "Germany (CET)" after a reload instead of the first alias.
+  persistKey?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [selectedLabel, setSelectedLabel] = useState("");
+  const [selectedLabel, setSelectedLabel] = useState(() => {
+    if (!persistKey || typeof window === "undefined") return "";
+    try {
+      const raw = window.localStorage.getItem(persistKey);
+      if (!raw) return "";
+      const saved = JSON.parse(raw) as { value: string; label: string };
+      return saved.value === value ? saved.label : "";
+    } catch { return ""; }
+  });
+  const remember = (val: T, label: string) => {
+    setSelectedLabel(label);
+    if (!persistKey) return;
+    try { window.localStorage.setItem(persistKey, JSON.stringify({ value: val, label })); } catch { /* ignore */ }
+  };
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -47,9 +84,10 @@ function CustomSelect<T extends string>({
     if (open && inputRef.current) inputRef.current.focus();
   }, [open]);
 
-  // Display: use stored label if set, otherwise fall back to first match in entries or options
+  // Display: the exact entry the user picked if known; otherwise the neutral region label from
+  // `options` (never a random country alias from the search entries).
   const entries = searchEntries || options;
-  const displayLabel = selectedLabel || entries.find(o => o.value === value)?.label || options.find(o => o.value === value)?.label || placeholder || "Select...";
+  const displayLabel = selectedLabel || options.find(o => o.value === value)?.label || entries.find(o => o.value === value)?.label || placeholder || "Select...";
 
   const filtered = search.trim()
     ? entries.filter(o => o.label.toLowerCase().includes(search.toLowerCase()))
@@ -90,7 +128,7 @@ function CustomSelect<T extends string>({
             <button
               key={`${opt.value}-${idx}`}
               type="button"
-              onClick={() => { onChange(opt.value); setSelectedLabel(opt.label); setOpen(false); setSearch(""); }}
+              onClick={() => { onChange(opt.value, opt.label); remember(opt.value, opt.label); setOpen(false); setSearch(""); }}
               className={`w-full text-left px-3.5 py-2 text-[12px] transition-all duration-150 ${
                 opt.label === displayLabel
                   ? "text-violet-700 font-semibold bg-violet-50"
@@ -221,6 +259,7 @@ interface Lead {
     isParkedDomain?: boolean;
     _siteDown?: boolean;
     audit_token?: string;
+    call_script?: { opening?: string; script?: string };
   };
 }
 
@@ -240,6 +279,16 @@ interface Email {
   error_log?: string | null;
   tone_variant?: string;
   gmail_email?: string | null;
+  // V2 Tier 1
+  open_count?: number;
+  click_count?: number;
+  first_opened_at?: string | null;
+  last_opened_at?: string | null;
+  last_clicked_at?: string | null;
+  triggered_by?: string | null;
+  is_resend?: boolean;
+  accelerated_at?: string | null;
+  resent_at?: string | null;
 }
 
 interface Campaign {
@@ -251,6 +300,8 @@ interface Campaign {
   send_timezone?: string;
   settings_confirmed?: boolean;
   created_at: string;
+  smart_sequences_enabled?: boolean;
+  smart_sequence_config?: Partial<SmartConfig> | null;
 }
 
 // Timezone options for email sending (concise labels shown in button & default list)
@@ -618,6 +669,16 @@ function LeadDetailModal({ lead, onClose, canGenerateAudit }: { lead: Lead; onCl
                 <div className="flex items-center gap-2 text-sm">
                   <svg className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#f97316" }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
                   <span className="text-xs" style={{ color: "rgba(255,255,255,0.7)" }}>{lead.phone}</span>
+                  {/* One-click call (opens the phone / softphone app via tel:) */}
+                  <a
+                    href={`tel:${lead.phone.replace(/[^\d+]/g, "")}`}
+                    className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold text-white transition-all hover:brightness-110"
+                    style={{ background: "linear-gradient(135deg, #ea580c, #f97316)", boxShadow: "0 3px 10px rgba(249,115,22,0.35)" }}
+                    title={`Call ${lead.phone}`}
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+                    Call
+                  </a>
                 </div>
               )}
               {lead.website && (
@@ -932,7 +993,7 @@ function CallScriptModal({ script, onClose }: { script: { lead_id: string; compa
 }
 
 // ===== Email Preview Modal =====
-function EmailPreviewModal({ emails, onClose, onMarkReply }: { emails: Email[]; onClose: () => void; onMarkReply: (id: string) => void }) {
+function EmailPreviewModal({ emails, onClose, onMarkReply, showTracking = true }: { emails: Email[]; onClose: () => void; onMarkReply: (id: string) => void; showTracking?: boolean }) {
   const stepStyles = [
     { border: "rgba(105,98,196,0.3)", label: "rgba(105,98,196,0.9)" },
     { border: "rgba(167,139,250,0.3)", label: "rgba(167,139,250,0.9)" },
@@ -985,7 +1046,7 @@ function EmailPreviewModal({ emails, onClose, onMarkReply }: { emails: Email[]; 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4" style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(105,98,196,0.3) transparent" }}>
           {emails.map((email) => {
-            const stepIdx = Math.min((email.sequence_step || 1) - 1, 2);
+            const stepIdx = Math.max(0, Math.min((email.sequence_step || 1) - 1, 2));
             const style = stepStyles[stepIdx];
             return (
               <div key={email.id} className="rounded-xl overflow-hidden" style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${style.border}` }}>
@@ -995,9 +1056,20 @@ function EmailPreviewModal({ emails, onClose, onMarkReply }: { emails: Email[]; 
                   {/* Meta row */}
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
-                      <span className="px-2.5 py-1 rounded-md text-[10px] font-bold text-white" style={{ background: style.label }}>
-                        {(email.sequence_step || 1) === 1 ? "Initial" : `Follow-up ${(email.sequence_step || 1) - 1}`}
+                      <span className="px-2.5 py-1 rounded-md text-[10px] font-bold text-white" style={{ background: email.is_resend ? "rgba(249,115,22,0.9)" : style.label }}>
+                        {email.is_resend ? "Re-sent (new subject)" : (email.sequence_step || 1) === 1 ? "Initial" : `Follow-up ${(email.sequence_step || 1) - 1}`}
                       </span>
+                      {showTracking && email.status === "sent" && (
+                        <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ background: (email.click_count || 0) > 0 ? "rgba(16,185,129,0.12)" : (email.open_count || 0) > 0 ? "rgba(249,115,22,0.12)" : "rgba(255,255,255,0.05)", color: (email.click_count || 0) > 0 ? "#34d399" : (email.open_count || 0) > 0 ? "#fdba74" : "rgba(255,255,255,0.4)" }}>
+                          {(email.open_count || 0) > 0 ? `${email.open_count} open${email.open_count === 1 ? "" : "s"}` : "not opened"}{(email.click_count || 0) > 0 ? ` · ${email.click_count} click${email.click_count === 1 ? "" : "s"}` : ""}
+                        </span>
+                      )}
+                      {email.triggered_by && (
+                        <span className="text-[10px] px-2 py-0.5 rounded font-semibold uppercase" style={{
+                          background: email.triggered_by === "accelerated" ? "rgba(59,130,246,0.15)" : email.triggered_by === "paused" ? "rgba(245,158,11,0.15)" : email.triggered_by === "cancelled" ? "rgba(239,68,68,0.15)" : "rgba(249,115,22,0.15)",
+                          color: email.triggered_by === "accelerated" ? "#93c5fd" : email.triggered_by === "paused" ? "#fcd34d" : email.triggered_by === "cancelled" ? "#fca5a5" : "#fdba74",
+                        }}>{email.triggered_by}</span>
+                      )}
                       {email.tone_variant && (
                         <span className="text-[10px] px-2 py-0.5 rounded font-medium uppercase" style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.5)" }}>{email.tone_variant}</span>
                       )}
@@ -1079,6 +1151,9 @@ export default function CampaignDetailPage() {
   const [sendTimezone, setSendTimezone] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  // True after the user picks a timezone entry, even one that maps to the same zone code
+  // (Spain → Germany are both EU_CENTRAL). Keeps Save enabled so the choice feels deliberate.
+  const [tzPicked, setTzPicked] = useState(false);
   const [showTzWarning, setShowTzWarning] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [generatingScripts, setGeneratingScripts] = useState(false);
@@ -1094,6 +1169,11 @@ export default function CampaignDetailPage() {
   const [callScriptPreviewLeadId, setCallScriptPreviewLeadId] = useState<string | null>(null);
   const [auditViews, setAuditViews] = useState<Record<string, { count: number; lastViewed: string; device: string }>>({});
   const [canGenerateAudit, setCanGenerateAudit] = useState(true);
+  // V2 Tier 1: open/click engagement, refreshed every 30s
+  const [tracking, setTracking] = useState<TrackingStats | null>(null);
+  const fetchTracking = useCallback(() => {
+    apiGet<TrackingStats>(`/tracking/campaign/${campaignId}`).then(setTracking).catch(() => {});
+  }, [campaignId]);
   const LEADS_PER_PAGE = 10;
 
   // Reset lead page when search changes
@@ -1129,10 +1209,10 @@ export default function CampaignDetailPage() {
 
       // Load call scripts from enriched_data
       const existingScripts = data.leads
-        .filter((l: Lead) => l.contact_method === "call" && l.enriched_data && (l.enriched_data as any).call_script)
+        .filter((l: Lead) => l.contact_method === "call" && l.enriched_data && l.enriched_data.call_script)
         .map((l: Lead) => {
-          const cs = (l.enriched_data as any).call_script;
-          return { lead_id: l.id, company: l.company, phone: l.phone, opening: cs.opening || "", script: cs.script || "" };
+          const cs = l.enriched_data?.call_script;
+          return { lead_id: l.id, company: l.company, phone: l.phone, opening: cs?.opening || "", script: cs?.script || "" };
         });
       if (existingScripts.length > 0) setCallScripts(existingScripts);
 
@@ -1146,6 +1226,16 @@ export default function CampaignDetailPage() {
       setLoading(false);
     }
   }, [campaignId]);
+
+  // Engagement events arrive at any time (pixel loads, link clicks). Poll every 30s so the
+  // campaign page reflects opens/clicks without a manual refresh. Growth+ only.
+  const trackingEnabled = plan.loaded && plan.canAccessFeatures && plan.features.emailTracking;
+  useEffect(() => {
+    if (!trackingEnabled) return;
+    fetchTracking();
+    const trackingTimer = setInterval(fetchTracking, 30000);
+    return () => clearInterval(trackingTimer);
+  }, [trackingEnabled, fetchTracking]);
 
   useEffect(() => {
     fetchCampaign();
@@ -1269,6 +1359,7 @@ export default function CampaignDetailPage() {
       });
       setCampaign(data.campaign);
       setSettingsSaved(true);
+      setTzPicked(false);
       const tzLabel = TIMEZONE_OPTIONS.find(t => t.value === sendTimezone)?.label || sendTimezone;
       toast.addToast(`Settings saved! Timezone: ${tzLabel}`, "success");
     } catch (err) {
@@ -1436,7 +1527,7 @@ export default function CampaignDetailPage() {
       {emailPreviewLeadId && (() => {
         const leadEmails = emails.filter(e => e.lead_id === emailPreviewLeadId).sort((a, b) => (a.sequence_step || 1) - (b.sequence_step || 1));
         return leadEmails.length > 0 ? (
-          <EmailPreviewModal emails={leadEmails} onClose={() => setEmailPreviewLeadId(null)} onMarkReply={handleMarkReply} />
+          <EmailPreviewModal emails={leadEmails} onClose={() => setEmailPreviewLeadId(null)} onMarkReply={handleMarkReply} showTracking={plan.features.emailTracking} />
         ) : null;
       })()}
 
@@ -1458,11 +1549,12 @@ export default function CampaignDetailPage() {
                 <svg className="w-3.5 h-3.5" style={{ color: "#a78bfa" }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 <CustomSelect
                   value={sendTimezone}
-                  onChange={(val) => { setSendTimezone(val); setShowTzWarning(false); }}
+                  onChange={(val) => { setSendTimezone(val); setTzPicked(true); setShowTzWarning(false); }}
                   options={TIMEZONE_OPTIONS}
                   searchEntries={TIMEZONE_SEARCH_ENTRIES}
                   disabled={savingSettings}
                   placeholder="Select Timezone"
+                  persistKey={`tz-label:${campaignId}`}
                 />
                 {/* Timezone warning card */}
                 {showTzWarning && (
@@ -1495,6 +1587,20 @@ export default function CampaignDetailPage() {
 
               <div className="w-px h-4 bg-white/10" />
 
+              {/* Smart Sequences (V2 Tier 1): chip + slide-in drawer — the header never expands */}
+              {plan.loaded && (
+                <>
+                  <SmartSequencePanel
+                    campaignId={campaign.id}
+                    enabled={!!campaign.smart_sequences_enabled}
+                    config={campaign.smart_sequence_config}
+                    locked={!plan.features.smartSequences}
+                    onSaved={(en, cfg) => { setCampaign({ ...campaign, smart_sequences_enabled: en, smart_sequence_config: cfg }); fetchTracking(); }}
+                    onToast={(msg, type) => toast.addToast(msg, type)}
+                  />
+                  <div className="w-px h-4 bg-white/10" />
+                </>
+              )}
               <button
                 type="button"
                 role="switch"
@@ -1522,7 +1628,7 @@ export default function CampaignDetailPage() {
 
               <button
                 onClick={handleSaveSettings}
-                disabled={savingSettings || !sendTimezone || (enableFollowups === (campaign?.enable_followups !== false) && sendTimezone === (campaign?.send_timezone || "US_EAST") && settingsSaved)}
+                disabled={savingSettings || !sendTimezone || (!tzPicked && enableFollowups === (campaign?.enable_followups !== false) && sendTimezone === (campaign?.send_timezone || "US_EAST") && settingsSaved)}
                 className="px-3 py-[5px] text-[11px] font-semibold text-white/90 rounded-md transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90"
                 style={{ background: "linear-gradient(135deg, #7c3aed, #a78bfa)" }}
               >
@@ -1695,6 +1801,31 @@ export default function CampaignDetailPage() {
                   </div>
                 </>
               )}
+              {tracking && tracking.totals.sent > 0 && (
+                <>
+                  <div className="w-px h-8 bg-white/10" />
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(249,115,22,0.14)" }}>
+                      <svg className="w-4 h-4" style={{ color: "#fdba74" }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 19v-8.93a2 2 0 01.89-1.664l7-4.666a2 2 0 012.22 0l7 4.666A2 2 0 0121 10.07V19M3 19a2 2 0 002 2h14a2 2 0 002-2M3 19l6.75-4.5M21 19l-6.75-4.5M3 10l6.75 4.5M21 10l-6.75 4.5m0 0l-1.14.76a2 2 0 01-2.22 0l-1.14-.76" /></svg>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-white">{tracking.totals.openRate}%</p>
+                      <p className="text-[10px] text-gray-400 uppercase tracking-wider">Open rate <span className="normal-case">({tracking.totals.uniqueOpened}/{tracking.totals.sent})</span></p>
+                    </div>
+                    <span className="ml-1 w-4 h-4 rounded-full text-[10px] font-bold flex items-center justify-center cursor-help" style={{ background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.6)" }} title="Open tracking uses an invisible image. Apple Mail and some privacy tools pre-load images, which can count an open the lead never made. Treat opens as a strong hint and clicks as proof.">i</span>
+                  </div>
+                  <div className="w-px h-8 bg-white/10" />
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(16,185,129,0.14)" }}>
+                      <svg className="w-4 h-4" style={{ color: "#6ee7b7" }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-white">{tracking.totals.clickRate}%</p>
+                      <p className="text-[10px] text-gray-400 uppercase tracking-wider">Click rate <span className="normal-case">({tracking.totals.uniqueClicked}/{tracking.totals.sent})</span></p>
+                    </div>
+                  </div>
+                </>
+              )}
               {auditViewedCount > 0 && (
                 <>
                   <div className="w-px h-8 bg-white/10" />
@@ -1720,6 +1851,7 @@ export default function CampaignDetailPage() {
                 </div>
               )}
           </div>
+
         </div>
       </div>
 
@@ -1940,6 +2072,34 @@ export default function CampaignDetailPage() {
                                   {auditViews[lead.id] && <span className="px-2 py-1 text-gray-500 border-l" style={{ borderColor: "rgba(107,114,128,0.2)" }}>{auditViews[lead.id].count} {auditViews[lead.id].count === 1 ? "view" : "views"}</span>}
                                 </span>
                               )}
+                              {/* V2 Tier 1: engagement (grey = no opens, orange = opened, green = clicked) + smart-sequence activity */}
+                              {(() => {
+                                const eng = tracking?.perLead[lead.id];
+                                const wasSent = lead.contacted || emails.some(e => e.lead_id === lead.id && e.status === "sent");
+                                if (!wasSent || !eng) return null;
+                                const tone = eng.clicks > 0
+                                  ? { bg: "bg-emerald-50", text: "text-emerald-700", ring: "ring-emerald-200" }
+                                  : eng.opens > 0
+                                  ? { bg: "bg-orange-50", text: "text-orange-700", ring: "ring-orange-200" }
+                                  : { bg: "bg-gray-50", text: "text-gray-500", ring: "ring-gray-200" };
+                                return (
+                                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                                    <span
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ring-1 ${tone.bg} ${tone.text} ${tone.ring}`}
+                                      title={eng.lastOpened ? `Last opened ${new Date(eng.lastOpened).toLocaleString()}${eng.lastClicked ? ` · last click ${new Date(eng.lastClicked).toLocaleString()}` : ""}` : "No opens recorded yet"}
+                                    >
+                                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                      {eng.opens} {eng.opens === 1 ? "open" : "opens"}
+                                      {eng.clicks > 0 && <span className="opacity-80">· {eng.clicks} {eng.clicks === 1 ? "click" : "clicks"}</span>}
+                                    </span>
+                                    {eng.hot && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold ring-1 bg-red-50 text-red-600 ring-red-200" title={`Opened ${eng.opens} times — call this lead`}>🔥 Hot</span>}
+                                    {eng.flags.resent && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-orange-50 text-orange-700 ring-orange-200" title="Initial email re-sent with a new subject (no opens after 48h)">Resent</span>}
+                                    {eng.flags.accelerated && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-blue-50 text-blue-700 ring-blue-200" title="Next follow-up pulled forward after engagement">Accelerated</span>}
+                                    {eng.flags.paused && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-amber-50 text-amber-700 ring-amber-200" title="Sequence paused after an out-of-office reply. Change the date from the Inbox.">Paused{eng.pausedUntil ? ` until ${new Date(eng.pausedUntil).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}</span>}
+                                    {eng.flags.cancelled && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-red-50 text-red-700 ring-red-200" title="Follow-ups cancelled (not interested / unsubscribe / bounce)">Cancelled</span>}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </td>
                           <td className="px-4 py-3.5">

@@ -40,7 +40,7 @@ export const PLAN_CONFIGS: Record<PlanTier, PlanConfig> = {
     monthlyLeadFindLimit: 2200,
     maxDailyGenerations: 300,   // 100 leads × 3 emails each
     maxEnrichBatchSize: 100,
-    priceMonthly: 79,
+    priceMonthly: 99,   // V2 Tier 1 (was 79)
   },
   agency: {
     warmup: [40, 100, 200],
@@ -48,7 +48,7 @@ export const PLAN_CONFIGS: Record<PlanTier, PlanConfig> = {
     monthlyLeadFindLimit: 4400,
     maxDailyGenerations: 600,   // 200 leads × 3 emails each
     maxEnrichBatchSize: 200,
-    priceMonthly: 129,
+    priceMonthly: 149,  // V2 Tier 1 (was 129)
   },
 };
 
@@ -80,6 +80,11 @@ export interface FeatureAccess {
   leadScoring: boolean;
   emailPersonalization: boolean;
   gmailWarmup: boolean;
+  // V2 Tier 1
+  emailTracking: boolean;       // open/click tracking — Growth and Agency
+  smartSequences: boolean;      // behaviour-based follow-ups — Growth and Agency
+  unifiedInbox: boolean;        // IMAP reply inbox — Growth and Agency
+  replyClassification: boolean; // AI reply categories — Growth and Agency
 }
 
 export function getFeatureAccess(plan: PlanTier, isOnTrial: boolean): FeatureAccess {
@@ -94,6 +99,10 @@ export function getFeatureAccess(plan: PlanTier, isOnTrial: boolean): FeatureAcc
       leadScoring: true,
       emailPersonalization: true,
       gmailWarmup: true,
+      emailTracking: true,
+      smartSequences: true,
+      unifiedInbox: true,
+      replyClassification: true,
     };
   }
 
@@ -109,6 +118,10 @@ export function getFeatureAccess(plan: PlanTier, isOnTrial: boolean): FeatureAcc
         leadScoring: true,
         emailPersonalization: true,
         gmailWarmup: true,
+        emailTracking: false,
+        smartSequences: false,
+        unifiedInbox: false,
+        replyClassification: false,
       };
     case "growth":
       return {
@@ -120,6 +133,10 @@ export function getFeatureAccess(plan: PlanTier, isOnTrial: boolean): FeatureAcc
         leadScoring: true,
         emailPersonalization: true,
         gmailWarmup: true,
+        emailTracking: true,
+        smartSequences: true,
+        unifiedInbox: true,
+        replyClassification: true,
       };
     case "agency":
       return {
@@ -131,6 +148,10 @@ export function getFeatureAccess(plan: PlanTier, isOnTrial: boolean): FeatureAcc
         leadScoring: true,
         emailPersonalization: true,
         gmailWarmup: true,
+        emailTracking: true,
+        smartSequences: true,
+        unifiedInbox: true,
+        replyClassification: true,
       };
   }
 }
@@ -1137,4 +1158,20 @@ export async function setUserTimezone(userId: string, timezone: string): Promise
     .eq("user_id", userId);
 
   return true;
+}
+
+// =============================================
+// Per-user feature lookup for background code (queue, tracking evaluator)
+// =============================================
+// Short cache so the email queue doesn't hit the DB once per email.
+const featureCache = new Map<string, { features: FeatureAccess; at: number }>();
+const FEATURE_CACHE_MS = 60 * 1000;
+
+export async function getUserFeatures(userId: string): Promise<FeatureAccess> {
+  const cached = featureCache.get(userId);
+  if (cached && Date.now() - cached.at < FEATURE_CACHE_MS) return cached.features;
+  const plan = await getUserPlan(userId);
+  const features = getFeatureAccess(plan.plan, plan.isOnTrial);
+  featureCache.set(userId, { features, at: Date.now() });
+  return features;
 }

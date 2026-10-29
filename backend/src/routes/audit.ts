@@ -244,35 +244,62 @@ router.post("/generate", authMiddleware, async (req: AuthenticatedRequest, res) 
 // IMPORTANT: Must be defined BEFORE /:token to avoid route collision
 router.get("/hot-leads", authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
-    // Get all audit views for this user
-    const { data: views, error: viewsError } = await supabase
-      .from("audit_views")
-      .select("lead_id, device, viewed_at")
-      .eq("user_id", req.userId)
-      .order("viewed_at", { ascending: false });
+    // Engagement = audit report views (V1) + email opens + link clicks (V2 Tier 1 tracking).
+    // All three signals describe the same lead, so they are merged into one list here.
+    const [{ data: views }, { data: trackedEmails }] = await Promise.all([
+      supabase
+        .from("audit_views")
+        .select("lead_id, device, viewed_at")
+        .eq("user_id", req.userId)
+        .order("viewed_at", { ascending: false }),
+      supabase
+        .from("emails")
+        .select("lead_id, open_count, click_count, first_opened_at, last_opened_at, first_clicked_at, last_clicked_at")
+        .eq("user_id", req.userId)
+        .eq("status", "sent")
+        .or("open_count.gt.0,click_count.gt.0"),
+    ]);
 
-    if (viewsError || !views || views.length === 0) {
-      res.json({ hotLeads: [] });
-      return;
+    interface Stats {
+      totalViews: number; opens: number; clicks: number;
+      firstActivity: string | null; lastActivity: string | null;
+      firstViewed: string | null; lastViewed: string | null; devices: Set<string>;
     }
+    const viewStats: Record<string, Stats> = {};
+    const bump = (leadId: string) => {
+      if (!viewStats[leadId]) {
+        viewStats[leadId] = { totalViews: 0, opens: 0, clicks: 0, firstActivity: null, lastActivity: null, firstViewed: null, lastViewed: null, devices: new Set() };
+      }
+      return viewStats[leadId];
+    };
+    const touch = (s: Stats, at: string | null | undefined) => {
+      if (!at) return;
+      if (!s.firstActivity || at < s.firstActivity) s.firstActivity = at;
+      if (!s.lastActivity || at > s.lastActivity) s.lastActivity = at;
+    };
 
-    // Aggregate views per lead
-    const viewStats: Record<string, { totalViews: number; firstViewed: string; lastViewed: string; devices: Set<string> }> = {};
-    for (const v of views) {
-      if (!viewStats[v.lead_id]) {
-        viewStats[v.lead_id] = { totalViews: 0, firstViewed: v.viewed_at, lastViewed: v.viewed_at, devices: new Set() };
-      }
-      viewStats[v.lead_id].totalViews++;
-      viewStats[v.lead_id].devices.add(v.device || "desktop");
-      if (v.viewed_at < viewStats[v.lead_id].firstViewed) {
-        viewStats[v.lead_id].firstViewed = v.viewed_at;
-      }
-      if (v.viewed_at > viewStats[v.lead_id].lastViewed) {
-        viewStats[v.lead_id].lastViewed = v.viewed_at;
-      }
+    for (const v of views || []) {
+      const s = bump(v.lead_id);
+      s.totalViews++;
+      s.devices.add(v.device || "desktop");
+      if (!s.firstViewed || v.viewed_at < s.firstViewed) s.firstViewed = v.viewed_at;
+      if (!s.lastViewed || v.viewed_at > s.lastViewed) s.lastViewed = v.viewed_at;
+      touch(s, v.viewed_at);
+    }
+    for (const e of trackedEmails || []) {
+      if (!e.lead_id) continue;
+      const s = bump(e.lead_id);
+      s.opens += e.open_count || 0;
+      s.clicks += e.click_count || 0;
+      touch(s, e.first_opened_at); touch(s, e.last_opened_at);
+      touch(s, e.first_clicked_at); touch(s, e.last_clicked_at);
     }
 
     const leadIds = Object.keys(viewStats);
+    if (leadIds.length === 0) {
+      res.json({ hotLeads: [] });
+      return;
+    }
 
     // Fetch lead details
     const { data: leads, error: leadsError } = await supabase
@@ -327,17 +354,26 @@ router.get("/hot-leads", authMiddleware, async (req: AuthenticatedRequest, res) 
         campaignId: lead.campaign_id,
         campaignName: campaignNames[lead.campaign_id] || "Unknown",
         replied: repliedLeadIds.has(lead.id),
-        totalViews: stats.totalViews,
-        firstViewed: stats.firstViewed,
-        lastViewed: stats.lastViewed,
+        // "Report opened" count = audit-link clicks — the SAME number the campaign page shows.
+        // Leads emailed before click tracking existed only have the older per-visitor view
+        // records, so fall back to those rather than showing 0.
+        totalViews: stats.clicks > 0 ? stats.clicks : stats.totalViews,
+        opens: stats.opens,
+        clicks: stats.clicks,
+        engagement: stats.clicks > 0 ? stats.clicks : stats.totalViews,
+        // Kept for backwards compatibility; the UI prefers the *Activity fields.
+        firstViewed: stats.firstViewed || stats.firstActivity,
+        lastViewed: stats.lastViewed || stats.lastActivity,
+        firstActivity: stats.firstActivity,
+        lastActivity: stats.lastActivity,
         devices: [...stats.devices],
       };
     });
 
-    // Sort by total views (most engaged first), then by recency
+    // Most engaged first, then most recent activity
     hotLeads.sort((a, b) => {
-      if (b.totalViews !== a.totalViews) return b.totalViews - a.totalViews;
-      return new Date(b.lastViewed).getTime() - new Date(a.lastViewed).getTime();
+      if (b.engagement !== a.engagement) return b.engagement - a.engagement;
+      return new Date(b.lastActivity || 0).getTime() - new Date(a.lastActivity || 0).getTime();
     });
 
     res.json({ hotLeads });

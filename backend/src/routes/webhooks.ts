@@ -387,8 +387,38 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       // subscription.updated fires on ANY field change (including our own cancel/reactivate
-      // toggles), so acting on it would race the dedicated events above. Intentionally a no-op.
-      case "subscription.updated":
+      // toggles). It is still the ONLY event Dodo emits when a scheduled cancellation is
+      // reverted from the Dodo dashboard, so it is handled for exactly one thing: mirroring
+      // `cancel_at_next_billing_date` on the subscription this row already holds (the
+      // stale-subscription guard above guarantees the id matches). Everything else stays
+      // a no-op to avoid racing the dedicated events.
+      case "subscription.updated": {
+        if (status !== "active" || typeof data?.cancel_at_next_billing_date !== "boolean") {
+          logger.info({ eventType, status }, "subscription.updated ignored (not an active/cancel-flag change)");
+          break;
+        }
+        const wantsCancelled = data.cancel_at_next_billing_date === true;
+        const { data: rowNow } = await supabaseAdmin
+          .from("user_plans")
+          .select("subscription_status")
+          .eq("user_id", userId)
+          .single();
+        const current = rowNow?.subscription_status;
+        if (!wantsCancelled && current === "cancelled") {
+          await supabaseAdmin
+            .from("user_plans")
+            .update({ subscription_status: "active", current_period_end: currentPeriodEnd, cancel_reason: null })
+            .eq("user_id", userId);
+          logger.info({ userId }, "Scheduled cancellation reverted at Dodo — subscription active again");
+        } else if (wantsCancelled && current === "active") {
+          await supabaseAdmin
+            .from("user_plans")
+            .update({ subscription_status: "cancelled", current_period_end: currentPeriodEnd })
+            .eq("user_id", userId);
+          logger.info({ userId }, "Cancellation scheduled at Dodo — mirrored");
+        }
+        break;
+      }
       case "subscription.update_payment_method":
       case "subscription.failed":
       default:

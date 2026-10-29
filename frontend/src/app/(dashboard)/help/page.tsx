@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
+import Link from "next/link";
 
 interface FAQ {
   question: string;
@@ -89,7 +90,7 @@ const faqs: FAQ[] = [
     category: "Account & Billing",
     question: "What are the plan limits?",
     answer:
-      "Starter ($39/mo): 50 leads/day, 500 leads/month, 1 inbox, 50 daily emails. Growth ($79/mo): 50 leads/day, 1000 leads/month, 2 inboxes, 100 daily emails. Scale ($149/mo): 50 leads/day, 2000 leads/month, 4 inboxes, 200 daily emails.",
+      "Starter ($39/mo): 50 emails/day after warmup, 1,100 leads/month, 1 inbox. Growth ($99/mo): 100 emails/day, 2,200 leads/month, 2 inboxes, plus email open & click tracking, smart follow-up sequences, the unified inbox and AI reply sorting. Agency ($149/mo): 200 emails/day, 4,400 leads/month, 4 inboxes, everything in Growth and priority support.",
   },
   {
     category: "Account & Billing",
@@ -151,7 +152,7 @@ export default function HelpPage() {
             </p>
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
-            <a
+            <Link
               href="/user-guide"
               className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg transition-all shadow-sm hover:opacity-90"
               style={{ background: "rgba(105,98,196,0.2)", color: "#c4b5fd", border: "1px solid rgba(105,98,196,0.4)" }}
@@ -160,7 +161,7 @@ export default function HelpPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
               User Guide
-            </a>
+            </Link>
             <a
               href="mailto:info@inertialeads.com"
               className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg transition-all shadow-sm hover:opacity-90"

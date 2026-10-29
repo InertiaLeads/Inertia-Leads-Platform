@@ -196,7 +196,7 @@ export default function TermsOfServicePage() {
                 <h2 className="text-lg font-semibold text-white mb-3">7. Subscription Plans and Billing</h2>
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Plans and Pricing</h3>
-                <p>The Service offers three subscription plans with different feature limits: Starter ($39/month), Growth ($79/month), and Agency ($129/month). All prices are in USD. Full feature details for each plan are available at inertialeads.com/pricing.</p>
+                <p>The Service offers three subscription plans with different feature limits: Starter ($39/month), Growth ($99/month), and Agency ($149/month). All prices are in USD. Full feature details for each plan are available at inertialeads.com/pricing.</p>
 
                 <h3 className="text-sm font-semibold text-white/90 mt-4 mb-2">Billing</h3>
                 <ul className="list-disc list-inside space-y-2 ml-1">

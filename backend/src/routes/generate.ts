@@ -81,8 +81,10 @@ function pickTone(): ToneKey {
 // signature across a whole campaign (an identical footer is a strong bulk fingerprint).
 // Plain "reply STOP" opt-out (no link, no List-Unsubscribe header, no HTML) so the
 // email reads like a personal 1:1 message and lands in Primary, not Promotions.
-// NOTE: STOP replies are NOT auto-suppressed — the sender must honor them manually
-// (or add the address via the suppression list). See docs before scaling volume.
+// NOTE: STOP replies are honoured automatically ONLY for users with the Unified Inbox
+// connected (V2 Tier 1: the reply fetcher classifies "STOP"/unsubscribe replies and adds the
+// address to email_suppressions). Without an inbox connection the sender must honour them
+// manually. See services/replyClassifier.ts.
 const OPT_OUT_VARIANTS = [
   () => `Not relevant? Just reply "STOP" and I won't follow up.`,
   () => `If this isn't for you, reply "STOP" and I'll leave you be.`,

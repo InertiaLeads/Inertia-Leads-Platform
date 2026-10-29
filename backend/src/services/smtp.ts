@@ -226,7 +226,11 @@ export async function sendViaSMTP(
   to: string,
   subject: string,
   body: string,
-  threading?: { inReplyTo?: string; references?: string }
+  threading?: { inReplyTo?: string; references?: string },
+  // Optional HTML mirror of `body` (see services/tracking.ts). nodemailer builds a
+  // multipart/alternative message when both text and html are given; text-only otherwise
+  // (the exact V1 behaviour). Manual inbox replies never pass this.
+  html?: string | null
 ): Promise<{ success: boolean; messageId?: string; threadId?: string }> {
   const { data: account, error } = await supabase
     .from("smtp_accounts")
@@ -284,6 +288,7 @@ export async function sendViaSMTP(
     to: safeTo,
     subject: safeSubject,
     text,
+    ...(html ? { html } : {}),
     ...(inReplyTo ? { inReplyTo } : {}),
     ...(references ? { references } : {}),
   });

@@ -3,6 +3,9 @@ import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import supabase from "../services/supabase";
 import { getPlanInfo, setUserTimezone, ServiceType } from "../services/planLimits";
 import { isValidUUID } from "../middleware/validate";
+import { clearAutoPause } from "../services/abuseGuard";
+import { reconcileUserBilling } from "../services/billingSync";
+import { requireFeature } from "../middleware/featureGate";
 
 const router = Router();
 
@@ -76,10 +79,34 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res) => {
         ? Math.round(scoredLeads.reduce((sum: number, l: any) => sum + (l.score || 0), 0) / scoredLeads.length)
         : 0;
 
+    // Billing safety net: confirm the row against Dodo (throttled to once per 10 min per user,
+    // 4s cap so a slow Dodo never delays the dashboard). Corrects missed/ignored webhooks.
+    try {
+      await Promise.race([
+        reconcileUserBilling(req.userId!),
+        new Promise((resolve) => setTimeout(resolve, 4000)),
+      ]);
+    } catch { /* never block stats on billing */ }
+
     // Get plan info for this user
     const planInfo = await getPlanInfo(req.userId!);
 
+    // V2 Tier 1: engagement totals + abuse-guard state for the dashboard
+    const [{ data: pauseRow }, { count: openedEmails }, { count: hotLeadEmails }, { count: unreadReplies }] = await Promise.all([
+      supabase.from("user_plans").select("auto_paused_at, auto_pause_reason").eq("user_id", req.userId).single(),
+      supabase.from("emails").select("*", { count: "exact", head: true }).eq("user_id", req.userId).eq("status", "sent").gt("open_count", 0),
+      supabase.from("emails").select("*", { count: "exact", head: true }).eq("user_id", req.userId).eq("status", "sent").or("open_count.gte.3,click_count.gte.3"),
+      supabase.from("replies").select("*", { count: "exact", head: true }).eq("user_id", req.userId).eq("direction", "inbound").eq("is_read", false).eq("is_archived", false),
+    ]);
+    const openRate = sent > 0 ? Math.round(((openedEmails || 0) / sent) * 100) : 0;
+
     res.json({
+      autoPausedAt: pauseRow?.auto_paused_at || null,
+      autoPauseReason: pauseRow?.auto_pause_reason || null,
+      emailsOpened: openedEmails || 0,
+      openRate: `${openRate}%`,
+      hotByOpens: hotLeadEmails || 0,
+      unreadReplies: unreadReplies || 0,
       totalLeads: totalLeads || 0,
       totalCampaigns: totalCampaigns || 0,
       emailsSent: sent,
@@ -237,6 +264,47 @@ router.put("/timezone", authMiddleware, async (req: AuthenticatedRequest, res) =
     res.json({ success: true, timezone });
   } catch {
     res.status(500).json({ error: "Failed to set timezone" });
+  }
+});
+
+// GET /api/stats/engagement — the dashboard "Engagement" card: three fixed numbers.
+//   replies : emails that received a reply from a lead (all time) + today
+//   clicks  : audit-report link clicks (all time) + today
+//   opens   : email opens (all time) + today
+router.get("/engagement", authMiddleware, requireFeature("emailTracking", "Engagement tracking"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = req.userId!;
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const today = dayStart.toISOString();
+
+    const [{ count: replies }, { count: repliesToday }, { data: sums }, { count: clicksToday }, { count: opensToday }] = await Promise.all([
+      supabase.from("emails").select("*", { count: "exact", head: true }).eq("user_id", userId).eq("replied", true),
+      supabase.from("emails").select("*", { count: "exact", head: true }).eq("user_id", userId).eq("replied", true).gte("replied_at", today),
+      supabase.from("emails").select("open_count, click_count").eq("user_id", userId).eq("status", "sent").or("open_count.gt.0,click_count.gt.0"),
+      supabase.from("email_events").select("*", { count: "exact", head: true }).eq("user_id", userId).eq("event_type", "click").gte("created_at", today),
+      supabase.from("email_events").select("*", { count: "exact", head: true }).eq("user_id", userId).eq("event_type", "open").gte("created_at", today),
+    ]);
+
+    let clicks = 0, opens = 0;
+    for (const r of sums || []) { clicks += r.click_count || 0; opens += r.open_count || 0; }
+
+    res.json({
+      replies: { total: replies || 0, today: repliesToday || 0 },
+      clicks: { total: clicks, today: clicksToday || 0 },
+      opens: { total: opens, today: opensToday || 0 },
+    });
+  } catch {
+    res.status(500).json({ error: "Failed to load engagement" });
+  }
+});
+
+// PUT /api/stats/acknowledge-pause — user dismissed the abuse-guard warning banner
+router.put("/acknowledge-pause", authMiddleware, async (req: AuthenticatedRequest, res) => {
+  try {
+    await clearAutoPause(req.userId!);
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: "Failed to update" });
   }
 });
 

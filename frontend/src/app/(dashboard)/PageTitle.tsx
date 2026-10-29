@@ -6,6 +6,7 @@ const pageTitles: Record<string, string> = {
   "/": "Dashboard",
   "/auto-leads": "Auto Lead Finder",
   "/campaigns": "Campaigns",
+  "/inbox": "Inbox",
   "/upload": "Upload Leads",
   "/hot-leads": "Hot Leads",
   "/settings": "Settings",

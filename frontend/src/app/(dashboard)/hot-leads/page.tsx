@@ -26,8 +26,13 @@ interface HotLead {
   campaignName: string;
   replied: boolean;
   totalViews: number;
+  opens: number;
+  clicks: number;
+  engagement: number;
   firstViewed: string;
   lastViewed: string;
+  firstActivity: string | null;
+  lastActivity: string | null;
   devices: string[];
 }
 
@@ -43,6 +48,7 @@ function formatTimeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+// Heat = how many times the lead opened their audit report (link clicks)
 function getHeatLevel(totalViews: number): { label: string; color: string; bg: string; ring: string; icon: string } {
   if (totalViews >= 5) return { label: "Very Hot", color: "text-red-700", bg: "bg-red-50", ring: "ring-red-200", icon: "🔥🔥🔥" };
   if (totalViews >= 3) return { label: "Hot", color: "text-orange-700", bg: "bg-orange-50", ring: "ring-orange-200", icon: "🔥🔥" };
@@ -55,16 +61,13 @@ export default function HotLeadsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "replied" | "not-contacted">("all");
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<"latest" | "most-viewed">("latest");
+  const [sort, setSort] = useState<"latest" | "most-engaged">("latest");
   const [page, setPage] = useState(1);
 
   useEffect(() => {
     // Only fetch hot leads data if plan is loaded and user has access
     if (!plan.loaded) return;
-    if (!plan.features.hotLeadTracking) {
-      setLoading(false);
-      return;
-    }
+    if (!plan.features.hotLeadTracking) return; // FeatureGate renders before `loading` is read
     apiGet<{ hotLeads: HotLead[] }>("/audit/hot-leads")
       .then((data) => setHotLeads(data.hotLeads))
       .catch(() => {})
@@ -88,17 +91,19 @@ export default function HotLeadsPage() {
     // Sort — copy first so we never mutate the source array. "latest" (default) puts the
     // most recently active leads on top (what a hot-leads action list should show first);
     // "most-viewed" ranks by all-time view count. Each falls back to the other as a tiebreaker.
-    const byLatest = (a: HotLead, b: HotLead) => new Date(b.lastViewed).getTime() - new Date(a.lastViewed).getTime();
-    const byViews = (a: HotLead, b: HotLead) => b.totalViews - a.totalViews;
+    const byLatest = (a: HotLead, b: HotLead) => new Date(b.lastActivity || b.lastViewed || 0).getTime() - new Date(a.lastActivity || a.lastViewed || 0).getTime();
+    const byEngagement = (a: HotLead, b: HotLead) => (b.engagement || 0) - (a.engagement || 0);
     return [...result].sort((a, b) =>
-      sort === "most-viewed" ? (byViews(a, b) || byLatest(a, b)) : (byLatest(a, b) || byViews(a, b))
+      sort === "most-engaged" ? (byEngagement(a, b) || byLatest(a, b)) : (byLatest(a, b) || byEngagement(a, b))
     );
   }, [hotLeads, filter, search, sort]);
 
   const paginatedLeads = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
 
   // Reset page when filter/search/sort changes
-  useEffect(() => { setPage(1); }, [filter, search, sort]);
+  const changeFilter = (v: typeof filter) => { if (v !== filter) { setFilter(v); setPage(1); } };
+  const changeSort = (v: typeof sort) => { if (v !== sort) { setSort(v); setPage(1); } };
+  const changeSearch = (v: string) => { if (v !== search) { setSearch(v); setPage(1); } };
 
   // Show locked modal if user hasn't set up subscription
   if (plan.loaded && !plan.canAccessFeatures) {
@@ -185,7 +190,7 @@ export default function HotLeadsPage() {
         ]).map((f) => (
           <button
             key={f.key}
-            onClick={() => setFilter(f.key)}
+            onClick={() => changeFilter(f.key)}
             className={`px-4 py-2 text-sm font-medium rounded-xl transition-all ${
               filter === f.key
                 ? "text-white shadow-md"
@@ -204,7 +209,7 @@ export default function HotLeadsPage() {
               { key: "latest" as const, label: "Latest", icon: (
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               ) },
-              { key: "most-viewed" as const, label: "Most viewed", icon: (
+              { key: "most-engaged" as const, label: "Most viewed", icon: (
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
               ) },
             ]).map((s) => {
@@ -212,7 +217,7 @@ export default function HotLeadsPage() {
               return (
                 <button
                   key={s.key}
-                  onClick={() => setSort(s.key)}
+                  onClick={() => changeSort(s.key)}
                   className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full transition-all duration-200 ${
                     active ? "text-white shadow-md" : "text-[#6b6790] hover:text-[#3d3580]"
                   }`}
@@ -229,7 +234,7 @@ export default function HotLeadsPage() {
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => changeSearch(e.target.value)}
               placeholder="Search leads..."
               className="pl-9 pr-4 py-2 text-sm bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[#6962c4]/20 focus:border-[#6962c4] w-64"
               style={{ border: '1px solid rgba(47, 39, 108, 0.3)' }}
@@ -316,7 +321,7 @@ export default function HotLeadsPage() {
                     </div>
                   </div>
 
-                  {/* Right: View stats */}
+                  {/* Right: how many times the audit report was opened (same count as the campaign page) */}
                   <div className="flex-shrink-0 text-right">
                     <div className="flex items-center gap-2 justify-end mb-1.5">
                       <svg className="w-4 h-4" style={{ color: '#6962c4' }} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
@@ -325,8 +330,8 @@ export default function HotLeadsPage() {
                       </div>
                       <span className="text-xs text-gray-400">{lead.totalViews === 1 ? "view" : "views"}</span>
                     </div>
-                    <p className="text-[11px] text-gray-400">Last viewed: {formatTimeAgo(lead.lastViewed)}</p>
-                    <p className="text-[11px] text-gray-400">First viewed: {formatTimeAgo(lead.firstViewed)}</p>
+                    <p className="text-[11px] text-gray-400">Last viewed: {formatTimeAgo(lead.lastActivity || lead.lastViewed)}</p>
+                    <p className="text-[11px] text-gray-400">First viewed: {formatTimeAgo(lead.firstActivity || lead.firstViewed)}</p>
                     {lead.score > 0 && (
                       <div className="mt-1.5">
                         <span className={`inline-flex items-center px-2 py-0.5 text-xs font-bold rounded-lg ring-1 ${
