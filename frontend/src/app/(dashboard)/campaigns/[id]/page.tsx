@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { apiGet, apiPost, apiPostLong, apiPut } from "@/lib/api";
 import SearchBar from "../../SearchBar";
@@ -420,6 +420,32 @@ const TIMEZONE_SEARCH_ENTRIES: { value: string; label: string }[] = [
   { value: "SOUTH_AFRICA", label: "Zimbabwe (CAT)" },
   { value: "SOUTH_AFRICA", label: "Mozambique (CAT)" },
 ];
+
+// Campaign send-timezone key -> IANA zone, used only to DISPLAY times (e.g. when a moved-up
+// follow-up will go out) in the lead's local time, matching how the backend schedules it.
+const TZ_IANA: Record<string, string> = {
+  US_EAST: "America/New_York", US_CENTRAL: "America/Chicago", US_MOUNTAIN: "America/Denver",
+  US_WEST: "America/Los_Angeles", US_ALASKA: "America/Anchorage", US_HAWAII: "Pacific/Honolulu",
+  CA_ATLANTIC: "America/Halifax", CA_NEWFOUNDLAND: "America/St_Johns",
+  UK: "Europe/London", EU_CENTRAL: "Europe/Berlin", EU_EAST: "Europe/Athens",
+  ARABIA: "Asia/Riyadh", UAE: "Asia/Dubai", INDIA: "Asia/Kolkata",
+  SINGAPORE: "Asia/Singapore", PHILIPPINES: "Asia/Manila", JAPAN: "Asia/Tokyo",
+  AU_WEST: "Australia/Perth", AU_CENTRAL: "Australia/Adelaide", AU_EAST: "Australia/Sydney",
+  NZ: "Pacific/Auckland", BRAZIL: "America/Sao_Paulo", SOUTH_AFRICA: "Africa/Johannesburg",
+};
+
+// "Today 8:00 AM" / "Tomorrow 8:00 AM" / "Nov 3, 8:00 AM" in the campaign's timezone.
+function formatSendTime(iso: string, tzKey?: string | null): string {
+  const timeZone = TZ_IANA[tzKey || "US_EAST"] || "America/New_York";
+  const d = new Date(iso);
+  const dayKey = (x: Date) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(x);
+  const time = new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", minute: "2-digit" }).format(d);
+  const now = new Date();
+  if (dayKey(d) === dayKey(now)) return `Today ${time}`;
+  if (dayKey(d) === dayKey(new Date(now.getTime() + 24 * 60 * 60 * 1000))) return `Tomorrow ${time}`;
+  const date = new Intl.DateTimeFormat("en-US", { timeZone, month: "short", day: "numeric" }).format(d);
+  return `${date}, ${time}`;
+}
 
 // ===== Progress Tracker =====
 interface ProgressStep {
@@ -1824,9 +1850,18 @@ export default function CampaignDetailPage() {
                       <p className="text-[10px] text-gray-400 uppercase tracking-wider">Click rate <span className="normal-case">({tracking.totals.uniqueClicked}/{tracking.totals.sent})</span></p>
                     </div>
                   </div>
+                  <div className="w-px h-8 bg-white/10" />
+                  <div className="flex items-center gap-2" title={`Leads with ${tracking.hotThreshold}+ opens + clicks`}>
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-base" style={{ background: "rgba(239,68,68,0.14)" }}>🔥</div>
+                    <div>
+                      <p className="text-lg font-bold text-white">{Object.values(tracking.perLead).filter(e => e.hot).length}</p>
+                      <p className="text-[10px] text-gray-400 uppercase tracking-wider">Hot Leads</p>
+                    </div>
+                  </div>
                 </>
               )}
-              {auditViewedCount > 0 && (
+              {/* Starter (no tracking): audit report views are the only engagement stat */}
+              {!trackingEnabled && auditViewedCount > 0 && (
                 <>
                   <div className="w-px h-8 bg-white/10" />
                   <div className="flex items-center gap-2">
@@ -2053,54 +2088,97 @@ export default function CampaignDetailPage() {
                             )}
                           </td>
                           <td className="pl-2 pr-4 py-3.5 text-sm">
-                            <div className="flex flex-col items-start">
-                              {emails.some(e => e.lead_id === lead.id && e.replied) ? (
-                                <span className="inline-flex items-center whitespace-nowrap rounded-md text-xs font-bold overflow-hidden" style={{ border: "1px solid rgba(16,185,129,0.3)" }}>
-                                  <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700">Replied</span>
-                                  {(() => { const r = emails.find(e => e.lead_id === lead.id && e.replied_at); return r?.replied_at ? <span className="px-2 py-1 text-emerald-600 border-l" style={{ borderColor: "rgba(16,185,129,0.3)" }}>{new Date(r.replied_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span> : null; })()}
-                                  {auditViews[lead.id] && <span className="px-2 py-1 text-emerald-600/80 border-l" style={{ borderColor: "rgba(16,185,129,0.3)" }}>{auditViews[lead.id].count} {auditViews[lead.id].count === 1 ? "view" : "views"}</span>}
-                                </span>
-                              ) : (lead.contacted || emails.some(e => e.lead_id === lead.id && e.status === "sent")) ? (
-                                <span className="inline-flex items-center whitespace-nowrap rounded-md text-xs font-bold overflow-hidden" style={{ border: "1px solid rgba(59,130,246,0.3)" }}>
-                                  <span className="px-2.5 py-1 bg-blue-50 text-blue-700">Contacted</span>
-                                  {lead.contacted_at && <span className="px-2 py-1 text-blue-600 border-l" style={{ borderColor: "rgba(59,130,246,0.3)" }}>{new Date(lead.contacted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>}
-                                  {auditViews[lead.id] && <span className="px-2 py-1 text-blue-600/80 border-l" style={{ borderColor: "rgba(59,130,246,0.3)" }}>{auditViews[lead.id].count} {auditViews[lead.id].count === 1 ? "view" : "views"}</span>}
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center whitespace-nowrap rounded-md text-xs font-bold overflow-hidden" style={{ border: "1px solid rgba(107,114,128,0.2)" }}>
-                                  <span className="px-2.5 py-1 bg-gray-50 text-gray-600">Uncontacted</span>
-                                  {auditViews[lead.id] && <span className="px-2 py-1 text-gray-500 border-l" style={{ borderColor: "rgba(107,114,128,0.2)" }}>{auditViews[lead.id].count} {auditViews[lead.id].count === 1 ? "view" : "views"}</span>}
-                                </span>
-                              )}
-                              {/* V2 Tier 1: engagement (grey = no opens, orange = opened, green = clicked) + smart-sequence activity */}
-                              {(() => {
-                                const eng = tracking?.perLead[lead.id];
-                                const wasSent = lead.contacted || emails.some(e => e.lead_id === lead.id && e.status === "sent");
-                                if (!wasSent || !eng) return null;
-                                const tone = eng.clicks > 0
-                                  ? { bg: "bg-emerald-50", text: "text-emerald-700", ring: "ring-emerald-200" }
-                                  : eng.opens > 0
-                                  ? { bg: "bg-orange-50", text: "text-orange-700", ring: "ring-orange-200" }
-                                  : { bg: "bg-gray-50", text: "text-gray-500", ring: "ring-gray-200" };
-                                return (
-                                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-                                    <span
-                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ring-1 ${tone.bg} ${tone.text} ${tone.ring}`}
-                                      title={eng.lastOpened ? `Last opened ${new Date(eng.lastOpened).toLocaleString()}${eng.lastClicked ? ` · last click ${new Date(eng.lastClicked).toLocaleString()}` : ""}` : "No opens recorded yet"}
-                                    >
-                                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                      {eng.opens} {eng.opens === 1 ? "open" : "opens"}
-                                      {eng.clicks > 0 && <span className="opacity-80">· {eng.clicks} {eng.clicks === 1 ? "click" : "clicks"}</span>}
+                            {(() => {
+                              // Three short lines, each answering one question:
+                              //   1. Where is this lead?   stage + date (+ Hot)
+                              //   2. What did they do?     opens / clicks (Starter: audit report views)
+                              //   3. What happens next?    moved-up follow-up / paused / stopped
+                              const leadEmails = emails.filter(e => e.lead_id === lead.id);
+                              const wasSent = !!lead.contacted || leadEmails.some(e => e.status === "sent");
+                              const repliedAt = leadEmails.find(e => e.replied_at)?.replied_at;
+                              const replied = leadEmails.some(e => e.replied);
+                              const eng = trackingEnabled ? tracking?.perLead[lead.id] : undefined;
+                              const views = auditViews[lead.id]?.count || 0;
+                              const shortDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+                              const stage = replied
+                                ? { label: "Replied", date: repliedAt, cls: "bg-emerald-50 text-emerald-700 ring-emerald-200" }
+                                : wasSent
+                                ? { label: "Contacted", date: lead.contacted_at, cls: "bg-blue-50 text-blue-700 ring-blue-200" }
+                                : { label: "Uncontacted", date: null, cls: "bg-gray-50 text-gray-600 ring-gray-200" };
+
+                              // Next step: one line, the most important state wins.
+                              let next: { tone: string; icon: ReactNode; text: string; title: string } | null = null;
+                              if (eng?.flags.cancelled) {
+                                next = { tone: "text-red-600", text: "Follow-ups stopped", title: "Remaining follow-ups were cancelled (not interested, unsubscribe or bounce).",
+                                  icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /> };
+                              } else if (eng?.flags.paused) {
+                                const until = eng.pausedUntil ? new Date(eng.pausedUntil).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : null;
+                                next = { tone: "text-amber-600", text: until ? `Paused until ${until}` : "Paused", title: "Paused after an out-of-office reply. Change the date from the Inbox.",
+                                  icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 9v6m4-6v6" /> };
+                              } else if (eng && !replied) {
+                                const movedUp = leadEmails
+                                  .filter(e => e.status === "pending" && (e.sequence_step || 1) > 1 && e.accelerated_at && e.scheduled_at)
+                                  .sort((x, y) => new Date(x.scheduled_at!).getTime() - new Date(y.scheduled_at!).getTime())[0];
+                                if (movedUp) {
+                                  next = { tone: "text-blue-600", text: `Follow-up ${(movedUp.sequence_step || 2) - 1} · ${formatSendTime(movedUp.scheduled_at!, campaign?.send_timezone)}`,
+                                    title: "Moved up by Smart Sequences after the lead engaged. Time shown in the campaign's timezone.",
+                                    icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /> };
+                                }
+                              }
+
+                              return (
+                                <div className="flex flex-col items-start gap-1">
+                                  {/* 1. Stage */}
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`inline-flex items-center gap-1 whitespace-nowrap px-2.5 py-0.5 rounded-md text-xs font-bold ring-1 ${stage.cls}`}>
+                                      {stage.label}
+                                      {stage.date && <span className="font-semibold opacity-75">· {shortDate(stage.date)}</span>}
                                     </span>
-                                    {eng.hot && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold ring-1 bg-red-50 text-red-600 ring-red-200" title={`Opened ${eng.opens} times — call this lead`}>🔥 Hot</span>}
-                                    {eng.flags.resent && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-orange-50 text-orange-700 ring-orange-200" title="Initial email re-sent with a new subject (no opens after 48h)">Resent</span>}
-                                    {eng.flags.accelerated && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-blue-50 text-blue-700 ring-blue-200" title="Next follow-up pulled forward after engagement">Accelerated</span>}
-                                    {eng.flags.paused && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-amber-50 text-amber-700 ring-amber-200" title="Sequence paused after an out-of-office reply. Change the date from the Inbox.">Paused{eng.pausedUntil ? ` until ${new Date(eng.pausedUntil).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}</span>}
-                                    {eng.flags.cancelled && <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ring-1 bg-red-50 text-red-700 ring-red-200" title="Follow-ups cancelled (not interested / unsubscribe / bounce)">Cancelled</span>}
+                                    {eng?.hot && (
+                                      <span className="inline-flex items-center gap-0.5 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-bold text-white"
+                                        style={{ background: "linear-gradient(135deg, #dc2626, #f97316)", boxShadow: "0 2px 8px rgba(239,68,68,0.3)" }}
+                                        title={`${eng.opens + eng.clicks} opens + clicks · call this lead`}>
+                                        🔥 Hot
+                                      </span>
+                                    )}
                                   </div>
-                                );
-                              })()}
-                            </div>
+
+                                  {/* 2. Engagement */}
+                                  {wasSent && eng && (
+                                    <div className="flex items-center gap-3 text-[11px] font-medium text-gray-500 whitespace-nowrap"
+                                      title={eng.lastOpened ? `Last opened ${new Date(eng.lastOpened).toLocaleString()}${eng.lastClicked ? ` · last click ${new Date(eng.lastClicked).toLocaleString()}` : ""}` : "No opens recorded yet"}>
+                                      <span className="inline-flex items-center gap-1">
+                                        <svg className={`w-3.5 h-3.5 ${eng.opens > 0 ? "text-orange-500" : "text-gray-300"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                        {eng.opens > 0 ? `${eng.opens} ${eng.opens === 1 ? "open" : "opens"}` : <span className="text-gray-400">Not opened yet</span>}
+                                      </span>
+                                      {eng.clicks > 0 && (
+                                        <span className="inline-flex items-center gap-1">
+                                          <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
+                                          {eng.clicks} {eng.clicks === 1 ? "click" : "clicks"}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {/* Starter (no tracking): the audit report view count is the only engagement signal */}
+                                  {!trackingEnabled && views > 0 && (
+                                    <div className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 whitespace-nowrap"
+                                      title={auditViews[lead.id]?.lastViewed ? `Last viewed ${new Date(auditViews[lead.id].lastViewed).toLocaleString()}` : undefined}>
+                                      <svg className="w-3.5 h-3.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                      Report viewed {views}×
+                                    </div>
+                                  )}
+
+                                  {/* 3. Next step */}
+                                  {next && (
+                                    <div className={`inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap ${next.tone}`} title={next.title}>
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">{next.icon}</svg>
+                                      {next.text}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="px-4 py-3.5">
                             {(() => {
