@@ -2097,40 +2097,41 @@ export default function CampaignDetailPage() {
                                     )}
                                   </div>
 
-                                  {/* 2. Engagement: two labelled boxes, so "open" and "click" can't be confused */}
-                                  {wasSent && eng && (
-                                    <div className="flex items-center gap-1.5 flex-wrap"
-                                      title={`Email = times the email was opened · Audit = times the audit link was clicked${eng.lastOpened ? `
+                                  {/* 2. Engagement: "Email: N" (opens) and "Audit: N" (audit link clicks). Each box is
+                                      grey at 0 and green once it is 1 or more. Starter (no tracking) shows audit report views. */}
+                                  {wasSent && (eng || !trackingEnabled) && (() => {
+                                    const box = (n: number) => n > 0
+                                      ? { cls: "bg-emerald-50 text-emerald-800 ring-emerald-200", icon: "text-emerald-500" }
+                                      : { cls: "bg-gray-50 text-gray-400 ring-gray-200", icon: "text-gray-300" };
+                                    const chip = "inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-medium ring-1";
+                                    if (eng) {
+                                      const e = box(eng.opens), c = box(eng.clicks);
+                                      return (
+                                        <div className="flex items-center gap-1.5 flex-wrap"
+                                          title={`Email = times the email was opened · Audit = times the audit link was clicked${eng.lastOpened ? `
 Last opened ${new Date(eng.lastOpened).toLocaleString()}` : ""}${eng.lastClicked ? `
 Last audit click ${new Date(eng.lastClicked).toLocaleString()}` : ""}`}>
-                                      {eng.opens > 0 ? (
-                                        <span className="inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 bg-orange-50 text-orange-800 ring-orange-200">
-                                          <svg className="w-3.5 h-3.5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                          Email: <b className="font-bold">{eng.opens}</b>
-                                        </span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 bg-gray-50 text-gray-400 ring-gray-200">
-                                          <svg className="w-3.5 h-3.5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                          Email: <b className="font-bold">0</b>
-                                        </span>
-                                      )}
-                                      {eng.clicks > 0 && (
-                                        <span className="inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 bg-emerald-50 text-emerald-800 ring-emerald-200">
-                                          <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
-                                          Audit: <b className="font-bold">{eng.clicks}</b>
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                  {/* Starter (no tracking): the audit report view count is the only engagement signal */}
-                                  {!trackingEnabled && views > 0 && (
-                                    <span className="inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 bg-violet-50 text-violet-800 ring-violet-200"
-                                      title={`Audit = times the audit report was viewed${auditViews[lead.id]?.lastViewed ? `
+                                          <span className={`${chip} ${e.cls}`}>
+                                            <svg className={`w-3.5 h-3.5 ${e.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                            Email: <b className="font-bold">{eng.opens}</b>
+                                          </span>
+                                          <span className={`${chip} ${c.cls}`}>
+                                            <svg className={`w-3.5 h-3.5 ${c.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
+                                            Audit: <b className="font-bold">{eng.clicks}</b>
+                                          </span>
+                                        </div>
+                                      );
+                                    }
+                                    const v = box(views);
+                                    return (
+                                      <span className={`${chip} ${v.cls}`}
+                                        title={`Audit = times the audit report was viewed${auditViews[lead.id]?.lastViewed ? `
 Last viewed ${new Date(auditViews[lead.id].lastViewed).toLocaleString()}` : ""}`}>
-                                      <svg className="w-3.5 h-3.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                      Audit: <b className="font-bold">{views}</b>
-                                    </span>
-                                  )}
+                                        <svg className={`w-3.5 h-3.5 ${v.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                        Audit: <b className="font-bold">{views}</b>
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })()}
