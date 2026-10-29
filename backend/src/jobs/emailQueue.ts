@@ -1,8 +1,9 @@
 import supabase from "../services/supabase";
 import { sendEmailUnified, getInboxSentTodayUnified, getPrimaryEmailAccountId, getAccountInfo, buildAccountAssignment } from "../services/emailRouter";
 import { isWithinSendWindow } from "../routes/send";
-import { getDailyLimit, getInboxDailyLimit, GMAIL_INBOX_CAP, getUserPlan, incrementEmailsSentToday } from "../services/planLimits";
+import { getDailyLimit, getInboxDailyLimit, GMAIL_INBOX_CAP, getUserPlan, incrementEmailsSentToday, getUserFeatures } from "../services/planLimits";
 import { isSuppressed } from "../services/suppression";
+import { prepareTrackedEmail } from "../services/tracking";
 import logger from "../utils/logger";
 import crypto from "crypto";
 
@@ -87,7 +88,7 @@ async function reapStuckSends(): Promise<void> {
   const cutoff = new Date(Date.now() - STUCK_SENDING_TIMEOUT_MIN * 60 * 1000).toISOString();
   const { data: stuck } = await supabase
     .from("emails")
-    .select("id, lead_id, campaign_id, sequence_step")
+    .select("id, lead_id, campaign_id, sequence_step, is_resend")
     .eq("status", "sending")
     .lt("claimed_at", cutoff);
 
@@ -104,8 +105,9 @@ async function reapStuckSends(): Promise<void> {
       .eq("status", "sending");
 
     // If an initial email was orphaned, cancel its pending follow-ups (consistent
-    // with how a permanently-failed initial email is handled).
-    if ((email.sequence_step || 1) === 1 && email.lead_id && email.campaign_id) {
+    // with how a permanently-failed initial email is handled). A smart-sequence re-send
+    // copy (is_resend) is NOT the initial — the original already reached the lead.
+    if ((email.sequence_step || 1) === 1 && !email.is_resend && email.lead_id && email.campaign_id) {
       await supabase
         .from("emails")
         .update({ status: "cancelled", error_log: "Cancelled: initial send interrupted" })
@@ -235,13 +237,23 @@ async function sendSingleEmail(
     }
   }
 
+  // ===== TRACKING: transform the OUTGOING copy only =====
+  // Links → signed click redirects; a bare HTML mirror with the open pixel is attached as
+  // a multipart/alternative part. The stored body (email.body) is never modified.
+  // Open/click tracking is a Growth+ feature: Starter emails go out exactly as V1 sent them.
+  const trackingAllowed = (await getUserFeatures(campaign.user_id)).emailTracking;
+  const tracked = trackingAllowed
+    ? prepareTrackedEmail(email.body, email.id)
+    : { text: String(email.body || "").trimEnd(), html: null };
+
   const result = await sendEmailUnified(
     accountInfo.id,
     accountInfo.type,
     email.to_email,
     subjectToSend,
-    email.body,
-    threading
+    tracked.text,
+    threading,
+    tracked.html
   );
 
   if (!result.success) {
@@ -311,8 +323,10 @@ async function handleSendError(email: any, err: unknown): Promise<void> {
     logger.error({ emailId: email.id, retries: MAX_RETRIES, error: errorMsg }, "Email failed permanently");
 
     // If the initial email failed permanently, cancel all its follow-ups
-    // (no point sending follow-up #2/#3 if the first email never reached the lead)
-    if ((email.sequence_step || 1) === 1 && email.lead_id && email.campaign_id) {
+    // (no point sending follow-up #2/#3 if the first email never reached the lead).
+    // A failed smart-sequence re-send copy does NOT cancel anything — the original
+    // initial email was delivered.
+    if ((email.sequence_step || 1) === 1 && !email.is_resend && email.lead_id && email.campaign_id) {
       const { data: cancelled } = await supabase
         .from("emails")
         .update({ status: "cancelled", error_log: "Cancelled: initial email failed" })
@@ -356,7 +370,7 @@ async function processEmailQueue() {
 
     const { data: campaigns, error: campaignsError } = await supabase
       .from("campaigns")
-      .select("id, user_id, send_timezone")
+      .select("id, user_id, send_timezone, smart_sequences_enabled, smart_sequence_config")
       .eq("status", "running");
 
     if (campaignsError || !campaigns || campaigns.length === 0) return;
@@ -381,12 +395,14 @@ async function processEmailQueue() {
         const batchSize = Math.min(INITIAL_BATCH_SIZE, remaining);
 
         if (batchSize > 0) {
+          // sequence_step 1 = initial; 0 = smart-sequence re-send copy (treated like an initial:
+          // fresh subject, no threading, cold-send delays).
           const { data: initialEmails } = await supabase
             .from("emails")
             .select("*")
             .eq("campaign_id", campaign.id)
             .eq("status", "pending")
-            .eq("sequence_step", 1)
+            .in("sequence_step", [0, 1])
             .or(`scheduled_at.is.null,scheduled_at.lte.${now}`)
             .order("created_at", { ascending: true })
             .limit(batchSize);
@@ -475,8 +491,10 @@ async function processEmailQueue() {
                 continue;
               }
 
-              // Gate: previous step must have been sent at least 2 days ago
-              if (prevEmail.sent_at) {
+              // Gate: previous step must have been sent at least 2 days ago.
+              // Bypassed for follow-ups a smart-sequence trigger deliberately pulled forward
+              // (accelerated_at set) — their scheduled_at already encodes the intended timing.
+              if (prevEmail.sent_at && !followUp.accelerated_at) {
                 const sentAt = new Date(prevEmail.sent_at);
                 const hoursSincePrev = (Date.now() - sentAt.getTime()) / (1000 * 60 * 60);
                 if (hoursSincePrev < 48) {

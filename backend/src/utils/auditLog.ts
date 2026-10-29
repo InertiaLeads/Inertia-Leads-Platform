@@ -19,7 +19,11 @@ export type AuditAction =
   | "email.send"
   | "email.generate"
   | "settings.update"
-  | "plan.change";
+  | "plan.change"
+  | "imap.connect"
+  | "imap.disconnect"
+  | "inbox.reply"
+  | "inbox.classify";
 
 interface AuditLogEntry {
   userId?: string;

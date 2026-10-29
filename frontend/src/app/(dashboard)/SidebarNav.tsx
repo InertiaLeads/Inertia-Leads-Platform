@@ -2,6 +2,32 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { apiGet } from "@/lib/api";
+import { usePlan } from "./PlanContext";
+
+// Unread-reply badge for the Inbox item. Polls every 30s, but only when the plan
+// actually includes the Unified Inbox (Growth+/trial) — Starter users never hit the API.
+function useUnreadReplies(enabled: boolean): number {
+  const [unread, setUnread] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const load = () => {
+      apiGet<{ unread: number }>("/inbox/unread-count")
+        .then((d) => { if (!cancelled) setUnread(d.unread || 0); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 30000);
+    // Refresh immediately when the Inbox page reports a change (read/archive/reply)
+    const onChange = () => load();
+    window.addEventListener("inbox:changed", onChange);
+    return () => { cancelled = true; clearInterval(id); window.removeEventListener("inbox:changed", onChange); };
+  }, [enabled]);
+  // Stale count from a previous plan state is never shown once the feature is off.
+  return enabled ? unread : 0;
+}
 
 const navItems = [
   {
@@ -27,6 +53,13 @@ const navItems = [
     ),
   },
   {
+    href: "/inbox",
+    label: "Inbox",
+    icon: (
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-3.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 007.586 13H4" />
+    ),
+  },
+  {
     href: "/upload",
     label: "Upload Leads",
     icon: (
@@ -44,6 +77,8 @@ const navItems = [
 
 export default function SidebarNav() {
   const pathname = usePathname();
+  const plan = usePlan();
+  const unreadReplies = useUnreadReplies(plan.loaded && plan.canAccessFeatures && plan.features.unifiedInbox);
 
   const isActive = (href: string, exact?: boolean) => {
     if (exact) return pathname === href;
@@ -138,7 +173,11 @@ export default function SidebarNav() {
                 </svg>
               </div>
               <span className={`sidebar-label text-sm font-medium transition-all duration-300 ${active ? "text-white" : "text-white/60"}`}>{item.label}</span>
-              {active && (
+              {item.href === "/inbox" && unreadReplies > 0 ? (
+                <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-bold flex items-center justify-center text-white" style={{ background: "linear-gradient(135deg, #7c3aed, #a78bfa)", boxShadow: "0 0 10px rgba(167,139,250,0.6)" }}>
+                  {unreadReplies > 99 ? "99+" : unreadReplies}
+                </span>
+              ) : active && (
                 <div className="sidebar-active-dot ml-auto w-2 h-2 rounded-full" style={{ background: "linear-gradient(135deg, #c4b5fd, #a78bfa)" }} />
               )}
             </Link>

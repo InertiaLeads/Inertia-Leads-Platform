@@ -14,10 +14,15 @@ import auditRouter from "./routes/audit";
 import billingRouter from "./routes/billing";
 import webhooksRouter from "./routes/webhooks";
 import unsubscribeRouter from "./routes/unsubscribe";
+import { publicTrackingRouter, trackingApiRouter, auditClickRedirect } from "./routes/tracking";
+import imapRouter from "./routes/imap";
+import inboxRouter from "./routes/inbox";
 import { apiLimiter, sendEmailLimiter, generateLimiter } from "./middleware/rateLimit";
 import { sanitizeBody, validateCampaignId } from "./middleware/validate";
 import { startEmailQueue, stopEmailQueue } from "./jobs/emailQueue";
 import { startCsvDripFeed, stopCsvDripFeed } from "./jobs/csvDripFeed";
+import { startReplyFetcher, stopReplyFetcher } from "./jobs/replyFetcher";
+import { startBillingSync, stopBillingSync } from "./services/billingSync";
 import { getDodoEnvironment } from "./services/dodo";
 
 const app = express();
@@ -72,6 +77,16 @@ app.get("/api/health", (_req, res) => {
 // mailbox providers' one-click button (POST, RFC 8058) hit this directly with no
 // Origin header. Protected by an HMAC-signed token in the URL.
 app.use("/api/unsubscribe", unsubscribeRouter);
+
+// Public open-pixel / click-redirect endpoints — hit by recipients' mail clients and
+// browsers (no Origin header, no auth). MUST be before CORS and the API rate limiter:
+// a mail provider's image proxy serves thousands of recipients from a few IPs, so an
+// IP-keyed limiter would silently drop real opens. Tokens are HMAC-signed (utils/trackingToken).
+// Served on the dedicated TRACKING_URL host, which points at this same service.
+app.use("/t", publicTrackingRouter);
+// Short audit-report links in outreach emails: track-host/audit/<token> → records the click,
+// then redirects to FRONTEND_URL/audit/<token>. (The API's own audit routes live under /api/audit.)
+app.get("/audit/:token", auditClickRedirect);
 
 // Gmail OAuth callback — Google redirects the browser here (GET) with no Origin
 // header. Must be BEFORE CORS so it isn't rejected in production.
@@ -139,6 +154,10 @@ app.use("/api/smtp", smtpRouter);
 app.use("/api/stats", statsRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/billing", billingRouter);
+// V2 Tier 1
+app.use("/api/tracking", trackingApiRouter);
+app.use("/api/imap", imapRouter);
+app.use("/api/inbox", inboxRouter);
 
 // (Dodo Payments webhook is mounted above, before CORS — see top of middleware setup.)
 
@@ -163,6 +182,10 @@ const server = app.listen(PORT, () => {
     { port: PORT, nodeEnv: process.env.NODE_ENV, dodoEnvironment: getDodoEnvironment() },
     "Backend server running"
   );
+  // Open/click tracking ships ONLY on the dedicated tracking domain (services/tracking.ts).
+  if (process.env.NODE_ENV === "production" && !process.env.TRACKING_URL) {
+    logger.warn("TRACKING_URL is not set — open/click tracking is DISABLED in production. Emails are sent untracked (plain text) until a tracking subdomain is configured.");
+  }
   // Start background email queue processor
   try {
     startEmailQueue();
@@ -175,6 +198,18 @@ const server = app.listen(PORT, () => {
   } catch (err) {
     logger.error({ err }, "Failed to start CSV drip-feed");
   }
+  // Start IMAP reply fetcher (unified inbox)
+  try {
+    startReplyFetcher();
+  } catch (err) {
+    logger.error({ err }, "Failed to start reply fetcher");
+  }
+  // Daily billing reconciliation against Dodo (safety net under the webhooks)
+  try {
+    startBillingSync();
+  } catch (err) {
+    logger.error({ err }, "Failed to start billing sync");
+  }
 });
 
 // Graceful shutdown — stop background jobs and close server on termination signals
@@ -182,6 +217,8 @@ function gracefulShutdown(signal: string, exitCode = 0) {
   logger.info({ signal }, "Shutdown signal received, closing gracefully...");
   stopEmailQueue();
   stopCsvDripFeed();
+  stopReplyFetcher();
+  stopBillingSync();
   server.close(() => {
     logger.info("Server closed. Exiting.");
     process.exit(exitCode);

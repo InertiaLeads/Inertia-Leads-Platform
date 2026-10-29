@@ -6,6 +6,7 @@ import { apiGet, apiPut } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import { DashboardSkeleton } from "./Skeleton";
 import { usePlan } from "./PlanContext";
+import TodayPanel from "./TodayPanel";
 
 interface Stats {
   totalLeads: number;
@@ -43,7 +44,15 @@ interface Stats {
     csvUpload: boolean;
     auditReports: boolean;
     prioritySupport: boolean;
+    unifiedInbox?: boolean;
   };
+  // V2 Tier 1
+  autoPausedAt?: string | null;
+  autoPauseReason?: string | null;
+  emailsOpened?: number;
+  openRate?: string;
+  hotByOpens?: number;
+  unreadReplies?: number;
 }
 
 interface AuditView {
@@ -78,8 +87,14 @@ export default function DashboardPage() {
   const [error, setError] = useState(false);
   const [auditViews, setAuditViews] = useState<AuditViewsResponse>({ views: [], leads: {} });
   const [onboarding, setOnboarding] = useState<{ hasProfile: boolean; hasEmail: boolean; hasServiceType: boolean; hasLeads: boolean } | null>(null);
+  const [pauseDismissed, setPauseDismissed] = useState(false);
   const router = useRouter();
   const plan = usePlan();
+
+  const dismissAutoPause = async () => {
+    setPauseDismissed(true);
+    try { await apiPut("/stats/acknowledge-pause", {}); } catch { /* banner is already hidden locally */ }
+  };
 
   // Early redirect: if PlanContext already knows status is "none", go to settings immediately
   useEffect(() => {
@@ -190,6 +205,16 @@ export default function DashboardPage() {
                   ✓ Warmup Complete
                 </span>
               )}
+              {plan.features.emailTracking && (stats.hotByOpens || 0) > 0 && (
+                <button onClick={() => router.push("/campaigns")} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all hover:brightness-110" style={{ background: "rgba(249,115,22,0.18)", color: "#fdba74", boxShadow: "inset 0 0 0 1px rgba(249,115,22,0.35)" }} title="Emails opened 3+ times — call these leads first">
+                  🔥 {stats.hotByOpens} hot by opens
+                </button>
+              )}
+              {(stats.unreadReplies || 0) > 0 && (
+                <button onClick={() => router.push("/inbox")} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all hover:brightness-110" style={{ background: "rgba(124,58,237,0.22)", color: "#c4b5fd", boxShadow: "inset 0 0 0 1px rgba(124,58,237,0.4)" }}>
+                  ✉ {stats.unreadReplies} unread {stats.unreadReplies === 1 ? "reply" : "replies"}
+                </button>
+              )}
             </div>
           </div>
           {/* Mini summary */}
@@ -213,6 +238,24 @@ export default function DashboardPage() {
       {error && (
         <div className="mb-6 bg-rose-50 border border-rose-200 rounded-xl p-4">
           <p className="text-sm text-rose-600">Failed to load dashboard stats. Please refresh.</p>
+        </div>
+      )}
+
+      {/* Abuse-guard notice: sending was paused automatically because of a bounce/unsubscribe spike */}
+      {stats.autoPausedAt && !pauseDismissed && (
+        <div className="mb-6 rounded-2xl p-5 flex items-start gap-4" style={{ background: "linear-gradient(135deg, #fff7ed, #fffbeb)", border: "1px solid rgba(245,158,11,0.35)" }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(245,158,11,0.15)" }}>
+            <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-amber-900">Your campaigns were paused to protect your sender reputation</p>
+            <p className="text-xs text-amber-800 mt-1 leading-relaxed">{stats.autoPauseReason}</p>
+            <p className="text-xs text-amber-700 mt-2">Paused {new Date(stats.autoPausedAt).toLocaleString()}. Review the lead list, then open each campaign and reactivate it when you&apos;re ready.</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={() => router.push("/campaigns")} className="px-3.5 py-2 text-xs font-bold rounded-lg text-white" style={{ background: "linear-gradient(135deg, #d97706, #f59e0b)" }}>Review campaigns</button>
+            <button onClick={dismissAutoPause} className="px-3 py-2 text-xs font-semibold rounded-lg text-amber-800 hover:bg-amber-100">Dismiss</button>
+          </div>
         </div>
       )}
 
@@ -394,6 +437,9 @@ export default function DashboardPage() {
               </div>
               <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Emails Sent</p>
               <p className="text-3xl font-black text-gray-900 tracking-tight leading-none">{v(stats.emailsSent)}</p>
+              {plan.features.emailTracking && stats.emailsSent > 0 && stats.openRate !== undefined && (
+                <p className="text-xs text-gray-400 mt-2">{v(stats.openRate)} opened · {v(stats.emailsOpened || 0)} emails</p>
+              )}
               {stats.dailySendLimit > 0 && (
                 <div className="mt-4 w-full rounded-full h-2 overflow-hidden" style={{ background: "linear-gradient(90deg, #ecfdf5, #f0fdf4)" }}>
                   <div className="h-2 rounded-full transition-all duration-1000 ease-out"
@@ -563,62 +609,8 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Quick Actions ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-        <button onClick={() => router.push("/auto-leads")} className="group relative rounded-2xl p-[1.5px] text-left transition-all duration-300 hover:-translate-y-1.5 hover:shadow-2xl hover:shadow-indigo-200/60 overflow-hidden" style={{ background: "linear-gradient(135deg, #818cf8, #c7d2fe, #818cf8)", boxShadow: "0 2px 12px rgba(99,102,241,0.10)" }}>
-          <div className="relative rounded-[14.5px] p-6 h-full overflow-hidden" style={{ background: "linear-gradient(135deg, #ffffff 0%, #fafaff 100%)" }}>
-            <div className="absolute -right-8 -bottom-8 w-36 h-36 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-700 blur-3xl" style={{ background: "radial-gradient(circle, rgba(99,102,241,0.22), transparent 70%)" }} />
-            <div className="relative">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-5" style={{ background: "linear-gradient(135deg, #4f46e5, #818cf8)", boxShadow: "0 4px 14px rgba(99,102,241,0.35)" }}>
-                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </div>
-              <p className="text-sm font-extrabold text-gray-900 tracking-tight">Find New Leads</p>
-              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Auto-discover businesses in any niche & location</p>
-              <div className="mt-5 inline-flex items-center gap-2 text-xs font-bold px-4 py-2 rounded-lg text-white transition-all group-hover:gap-3 group-hover:shadow-lg group-hover:shadow-indigo-300/50" style={{ background: "linear-gradient(135deg, #4f46e5, #818cf8)", boxShadow: "0 2px 8px rgba(99,102,241,0.25)" }}>
-                <span>Get started</span>
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
-              </div>
-            </div>
-          </div>
-        </button>
-        <button onClick={() => router.push("/campaigns")} className="group relative rounded-2xl p-[1.5px] text-left transition-all duration-300 hover:-translate-y-1.5 hover:shadow-2xl hover:shadow-emerald-200/60 overflow-hidden" style={{ background: "linear-gradient(135deg, #34d399, #a7f3d0, #34d399)", boxShadow: "0 2px 12px rgba(16,185,129,0.10)" }}>
-          <div className="relative rounded-[14.5px] p-6 h-full overflow-hidden" style={{ background: "linear-gradient(135deg, #ffffff 0%, #f8fdfb 100%)" }}>
-            <div className="absolute -right-8 -bottom-8 w-36 h-36 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-700 blur-3xl" style={{ background: "radial-gradient(circle, rgba(16,185,129,0.22), transparent 70%)" }} />
-            <div className="relative">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-5" style={{ background: "linear-gradient(135deg, #059669, #34d399)", boxShadow: "0 4px 14px rgba(16,185,129,0.35)" }}>
-                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <p className="text-sm font-extrabold text-gray-900 tracking-tight">View Campaigns</p>
-              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Manage sequences, track opens & replies</p>
-              <div className="mt-5 inline-flex items-center gap-2 text-xs font-bold px-4 py-2 rounded-lg text-white transition-all group-hover:gap-3 group-hover:shadow-lg group-hover:shadow-emerald-300/50" style={{ background: "linear-gradient(135deg, #059669, #34d399)", boxShadow: "0 2px 8px rgba(16,185,129,0.25)" }}>
-                <span>View all</span>
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
-              </div>
-            </div>
-          </div>
-        </button>
-        <button onClick={() => router.push("/hot-leads")} className="group relative rounded-2xl p-[1.5px] text-left transition-all duration-300 hover:-translate-y-1.5 hover:shadow-2xl hover:shadow-amber-200/60 overflow-hidden" style={{ background: "linear-gradient(135deg, #fbbf24, #fde68a, #fbbf24)", boxShadow: "0 2px 12px rgba(245,158,11,0.10)" }}>
-          <div className="relative rounded-[14.5px] p-6 h-full overflow-hidden" style={{ background: "linear-gradient(135deg, #ffffff 0%, #fffef8 100%)" }}>
-            <div className="absolute -right-8 -bottom-8 w-36 h-36 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-700 blur-3xl" style={{ background: "radial-gradient(circle, rgba(245,158,11,0.22), transparent 70%)" }} />
-            <div className="relative">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-5" style={{ background: "linear-gradient(135deg, #d97706, #fbbf24)", boxShadow: "0 4px 14px rgba(245,158,11,0.35)" }}>
-                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
-                </svg>
-              </div>
-              <p className="text-sm font-extrabold text-gray-900 tracking-tight">Hot Leads</p>
-              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Leads that viewed your audit report page</p>
-              <div className="mt-5 inline-flex items-center gap-2 text-xs font-bold px-4 py-2 rounded-lg text-white transition-all group-hover:gap-3 group-hover:shadow-lg group-hover:shadow-amber-300/50" style={{ background: "linear-gradient(135deg, #d97706, #fbbf24)", boxShadow: "0 2px 8px rgba(245,158,11,0.25)" }}>
-                <span>Check now</span>
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
-              </div>
-            </div>
-          </div>
-        </button>
-      </div>
+      {/* Engagement Pulse — one compact tracking card (V2 Tier 1). Room below is intentionally left for future features. */}
+      <TodayPanel />
       </>
       )}
     </div>

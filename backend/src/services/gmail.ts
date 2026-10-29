@@ -242,7 +242,11 @@ export async function sendEmail(
   to: string,
   subject: string,
   body: string,
-  threading?: ThreadingOptions
+  threading?: ThreadingOptions,
+  // Optional HTML mirror of `body` (see services/tracking.ts). When present the message is
+  // sent as multipart/alternative (text + html); when absent it is the exact single-part
+  // plain-text message V1 always sent. Manual inbox replies never pass this.
+  html?: string | null
 ): Promise<{ success: boolean; messageId?: string; threadId?: string }> {
   // Fetch account for token, email address, and owner (for display name lookup)
   const { data: account, error: accountError } = await supabase
@@ -291,12 +295,30 @@ export async function sendEmail(
   const references = threading?.references?.replace(/[\r\n]/g, "");
   if (inReplyTo) headers.push(`In-Reply-To: ${inReplyTo}`);
   if (references) headers.push(`References: ${references}`);
-  headers.push(
-    `MIME-Version: 1.0`,
-    `Content-Type: text/plain; charset="UTF-8"`,
-  );
+  headers.push(`MIME-Version: 1.0`);
 
-  const rawEmail = headers.join("\n") + "\n\n" + text;
+  let rawEmail: string;
+  if (html) {
+    // multipart/alternative: the text part is byte-identical to the V1 single-part message;
+    // the HTML part is a bare mirror (no styling) carrying the tracking pixel + tracked links.
+    // The HTML part is base64-encoded so long anchor lines never exceed RFC 5322 line limits.
+    const boundary = `=_il_${crypto.randomBytes(12).toString("hex")}`;
+    const htmlB64 = Buffer.from(html, "utf8").toString("base64").replace(/(.{76})/g, "$1\n");
+    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    rawEmail =
+      headers.join("\n") + "\n\n" +
+      `--${boundary}\n` +
+      `Content-Type: text/plain; charset="UTF-8"\n\n` +
+      text + "\n\n" +
+      `--${boundary}\n` +
+      `Content-Type: text/html; charset="UTF-8"\n` +
+      `Content-Transfer-Encoding: base64\n\n` +
+      htmlB64 + "\n" +
+      `--${boundary}--`;
+  } else {
+    headers.push(`Content-Type: text/plain; charset="UTF-8"`);
+    rawEmail = headers.join("\n") + "\n\n" + text;
+  }
 
   const encodedEmail = Buffer.from(rawEmail)
     .toString("base64")

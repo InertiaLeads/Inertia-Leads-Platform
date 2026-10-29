@@ -74,12 +74,15 @@ export async function sendEmailUnified(
   to: string,
   subject: string,
   body: string,
-  threading?: ThreadingOptions
+  threading?: ThreadingOptions,
+  // Optional HTML mirror for open/click tracking (multipart/alternative). Omit for
+  // plain-text-only sends such as manual inbox replies.
+  html?: string | null
 ): Promise<{ success: boolean; messageId?: string; threadId?: string }> {
   if (accountType === "gmail") {
-    return sendViaGmail(accountId, to, subject, body, threading);
+    return sendViaGmail(accountId, to, subject, body, threading, html);
   } else {
-    return sendViaSMTP(accountId, to, subject, body, threading);
+    return sendViaSMTP(accountId, to, subject, body, threading, html);
   }
 }
 

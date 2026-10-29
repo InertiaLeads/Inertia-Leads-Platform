@@ -4,6 +4,8 @@ import supabase from "../services/supabase";
 import { isValidUUID } from "../middleware/validate";
 import { auditLog } from "../utils/auditLog";
 import logger from "../utils/logger";
+import { normalizeSmartConfig } from "../services/smartSequences";
+import { getUserFeatures } from "../services/planLimits";
 
 const router = Router();
 
@@ -268,7 +270,7 @@ router.put("/:id", authMiddleware, async (req: AuthenticatedRequest, res) => {
       res.status(400).json({ error: "Invalid campaign ID format" });
       return;
     }
-    const { enable_followups, name, status, send_timezone } = req.body;
+    const { enable_followups, name, status, send_timezone, smart_sequences_enabled, smart_sequence_config } = req.body;
 
     // Verify campaign ownership
     const { data: campaign, error: campaignError } = await supabase
@@ -293,6 +295,17 @@ router.put("/:id", authMiddleware, async (req: AuthenticatedRequest, res) => {
     }
     if (status !== undefined) {
       updateData.status = status;
+    }
+    // V2 Tier 1: smart sequences (toggle + per-trigger config, validated/clamped server-side)
+    if (smart_sequences_enabled === true && !(await getUserFeatures(req.userId!)).smartSequences) {
+      res.status(403).json({ error: "Smart Sequences are available on the Growth and Agency plans. Upgrade to unlock them.", upgradeRequired: true });
+      return;
+    }
+    if (smart_sequences_enabled !== undefined) {
+      updateData.smart_sequences_enabled = smart_sequences_enabled === true;
+    }
+    if (smart_sequence_config !== undefined) {
+      updateData.smart_sequence_config = normalizeSmartConfig(smart_sequence_config);
     }
     if (send_timezone !== undefined) {
       const validTimezones = ["US_EAST", "US_CENTRAL", "US_MOUNTAIN", "US_WEST", "US_ALASKA", "US_HAWAII", "CA_ATLANTIC", "CA_NEWFOUNDLAND", "UK", "EU_CENTRAL", "EU_EAST", "UAE", "ARABIA", "INDIA", "SINGAPORE", "PHILIPPINES", "JAPAN", "AU_WEST", "AU_CENTRAL", "AU_EAST", "NZ", "BRAZIL", "SOUTH_AFRICA"];

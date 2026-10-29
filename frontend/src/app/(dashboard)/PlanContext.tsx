@@ -9,6 +9,11 @@ interface Features {
   csvUpload: boolean;
   auditReports: boolean;
   prioritySupport: boolean;
+  // V2 Tier 1
+  emailTracking: boolean;
+  smartSequences: boolean;
+  unifiedInbox: boolean;
+  replyClassification: boolean;
 }
 
 interface PlanData {
@@ -31,6 +36,10 @@ const defaultFeatures: Features = {
   csvUpload: true,
   auditReports: true,
   prioritySupport: false,
+  emailTracking: false,
+  smartSequences: false,
+  unifiedInbox: false,
+  replyClassification: false,
 };
 
 const defaultPlanData: PlanData = {
@@ -101,6 +110,11 @@ export function PlanProvider({ children }: { children: ReactNode }) {
             csvUpload: data.isOnTrial || data.features?.csvUpload !== false,
             auditReports: data.features?.auditReports !== false,
             prioritySupport: data.features?.prioritySupport || false,
+            // Tier 1 is Growth+ only: fail closed when the backend doesn't say yes
+            emailTracking: data.isOnTrial || data.features?.emailTracking === true,
+            smartSequences: data.isOnTrial || data.features?.smartSequences === true,
+            unifiedInbox: data.isOnTrial || data.features?.unifiedInbox === true,
+            replyClassification: data.isOnTrial || data.features?.replyClassification === true,
           },
           leadsFoundToday: data.leadsFoundToday,
           dailyLeadFindLimit: data.dailyLeadFindLimit,

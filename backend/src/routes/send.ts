@@ -146,6 +146,20 @@ function setToLocalHour(date: Date, targetHour: number, offset: number): void {
   date.setTime(date.getTime() + offsetMs);
 }
 
+// Start of business (default 8:00) on the NEXT calendar day in the campaign's timezone.
+// Used by Smart Sequences: an audit-report click moves the next follow-up to "tomorrow morning".
+export function nextLocalMorning(timezone: string, from: Date = new Date(), hour = 8): Date {
+  const offsets = TIMEZONE_OFFSETS[timezone] || TIMEZONE_OFFSETS.US_EAST;
+  const region = TIMEZONE_REGIONS[timezone] || "US";
+  const offsetNow = isDSTForRegion(from, region) ? offsets[1] : offsets[0];
+  const local = new Date(from.getTime() + offsetNow * 3600000);
+  const localTarget = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1, hour, 0, 0);
+  // Re-check DST at the target moment (a DST switch overnight changes the offset).
+  const guess = new Date(localTarget - offsetNow * 3600000);
+  const offsetThen = isDSTForRegion(guess, region) ? offsets[1] : offsets[0];
+  return new Date(localTarget - offsetThen * 3600000);
+}
+
 // Check if current time is within sending hours
 // Initial emails (isFollowUp=false): Mon-Sat during business hours
 // Follow-ups (isFollowUp=true): all 7 days during business hours

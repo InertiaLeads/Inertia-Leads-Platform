@@ -52,24 +52,36 @@ export function describeDodoError(err: any): Record<string, unknown> {
   };
 }
 
-// Plan tier → Dodo product ID (from the dashboard). Mirrors the old VARIANT_MAP.
-export function getProductId(plan: string): string {
-  const map: Record<string, string> = {
-    starter: process.env.DODO_STARTER_PRODUCT_ID || "",
-    growth: process.env.DODO_GROWTH_PRODUCT_ID || "",
-    agency: process.env.DODO_AGENCY_PRODUCT_ID || "",
-  };
-  return map[plan] || "";
+// Each DODO_*_PRODUCT_ID may hold SEVERAL comma-separated product IDs: the FIRST is the
+// current product (used for new checkouts and plan changes); any others are older products
+// some subscriptions may still reference. All of them map back to the same plan tier, so
+// replacing a product in Dodo can never silently downgrade a subscriber to Starter.
+//   DODO_GROWTH_PRODUCT_ID=pdt_current,pdt_previous
+function productIdsFor(envValue: string | undefined): string[] {
+  return (envValue || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
-// Dodo product ID → plan tier (reverse lookup for webhooks). Defaults to "starter".
-export function getPlanFromProduct(productId: string): string {
-  const map: Record<string, string> = {
-    [process.env.DODO_STARTER_PRODUCT_ID || ""]: "starter",
-    [process.env.DODO_GROWTH_PRODUCT_ID || ""]: "growth",
-    [process.env.DODO_AGENCY_PRODUCT_ID || ""]: "agency",
+function productEnv(): Record<string, string[]> {
+  return {
+    starter: productIdsFor(process.env.DODO_STARTER_PRODUCT_ID),
+    growth: productIdsFor(process.env.DODO_GROWTH_PRODUCT_ID),
+    agency: productIdsFor(process.env.DODO_AGENCY_PRODUCT_ID),
   };
-  return (productId && map[productId]) || "starter";
+}
+
+// Plan tier → current Dodo product ID (first in the list).
+export function getProductId(plan: string): string {
+  return productEnv()[plan]?.[0] || "";
+}
+
+// Dodo product ID → plan tier (reverse lookup for webhooks). Matches current AND legacy
+// products. Defaults to "starter".
+export function getPlanFromProduct(productId: string): string {
+  if (!productId) return "starter";
+  for (const [plan, ids] of Object.entries(productEnv())) {
+    if (ids.includes(productId)) return plan;
+  }
+  return "starter";
 }
 
 // Dodo subscription status → our internal subscription_status. Same target values

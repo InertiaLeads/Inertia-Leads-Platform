@@ -20,6 +20,7 @@ const REQUIRED_ENV_VARS = [
 // Optional but recommended
 const OPTIONAL_ENV_VARS = [
   "BACKEND_URL", // Public backend URL for unsubscribe links — falls back to GMAIL_REDIRECT_URI origin
+  "TRACKING_URL", // Dedicated open/click tracking domain (e.g. https://track.example.com → this service). Falls back to BACKEND_URL.
   "PAGESPEED_API_KEY", // Google PageSpeed Insights — free 25k/day
   // Dodo Payments (billing). Product IDs come from Dodo Dashboard → Products.
   "DODO_PAYMENTS_API_KEY",
