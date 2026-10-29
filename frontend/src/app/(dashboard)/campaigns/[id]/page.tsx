@@ -2146,32 +2146,32 @@ export default function CampaignDetailPage() {
 
                                   {/* 2. Engagement */}
                                   {wasSent && eng && (
-                                    <div className="flex items-center gap-3 text-[11px] font-medium text-gray-500 whitespace-nowrap"
+                                    <div className="flex items-center gap-3 text-xs font-medium text-gray-600 whitespace-nowrap"
                                       title={eng.lastOpened ? `Last opened ${new Date(eng.lastOpened).toLocaleString()}${eng.lastClicked ? ` · last click ${new Date(eng.lastClicked).toLocaleString()}` : ""}` : "No opens recorded yet"}>
                                       <span className="inline-flex items-center gap-1">
-                                        <svg className={`w-3.5 h-3.5 ${eng.opens > 0 ? "text-orange-500" : "text-gray-300"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                        {eng.opens > 0 ? `${eng.opens} ${eng.opens === 1 ? "open" : "opens"}` : <span className="text-gray-400">Not opened yet</span>}
+                                        <svg className={`w-4 h-4 ${eng.opens > 0 ? "text-orange-500" : "text-gray-300"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                        {eng.opens > 0 ? <span><b className="font-bold text-gray-900">{eng.opens}</b> {eng.opens === 1 ? "open" : "opens"}</span> : <span className="text-gray-400">Not opened yet</span>}
                                       </span>
                                       {eng.clicks > 0 && (
                                         <span className="inline-flex items-center gap-1">
-                                          <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
-                                          {eng.clicks} {eng.clicks === 1 ? "click" : "clicks"}
+                                          <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
+                                          <span><b className="font-bold text-gray-900">{eng.clicks}</b> {eng.clicks === 1 ? "click" : "clicks"}</span>
                                         </span>
                                       )}
                                     </div>
                                   )}
                                   {/* Starter (no tracking): the audit report view count is the only engagement signal */}
                                   {!trackingEnabled && views > 0 && (
-                                    <div className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 whitespace-nowrap"
+                                    <div className="inline-flex items-center gap-1 text-xs font-medium text-gray-600 whitespace-nowrap"
                                       title={auditViews[lead.id]?.lastViewed ? `Last viewed ${new Date(auditViews[lead.id].lastViewed).toLocaleString()}` : undefined}>
                                       <svg className="w-3.5 h-3.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                      Report viewed {views}×
+                                      Report viewed <b className="font-bold text-gray-900">{views}×</b>
                                     </div>
                                   )}
 
                                   {/* 3. Next step */}
                                   {next && (
-                                    <div className={`inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap ${next.tone}`} title={next.title}>
+                                    <div className={`inline-flex items-center gap-1 text-[11px] font-normal whitespace-nowrap ${next.tone}`} title={next.title}>
                                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">{next.icon}</svg>
                                       {next.text}
                                     </div>
