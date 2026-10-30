@@ -88,8 +88,13 @@ async function leadHasReplied(leadId: string, campaignId: string): Promise<boole
   return !!(data && data.length > 0);
 }
 
-// Pull the NEXT pending follow-up for this lead forward to now + hours. Once per follow-up
-// (accelerated_at guard); never pushes a follow-up later than it already was.
+// Pull the NEXT pending follow-up for this lead forward to `target` (next local morning).
+// Once per follow-up (accelerated_at guard); never pushes a follow-up later than it already was.
+//
+// Only ONE moved-up follow-up may be waiting at a time: we always look at the lowest pending
+// step, and if that one is already moved up we stop. So several clicks/opens on the same day
+// can't also pull follow-up 2 onto that same morning — follow-up 2 can only move after
+// follow-up 1 has actually been sent and the lead engages again (→ the next morning after that).
 async function accelerateNextFollowUp(
   leadId: string,
   campaignId: string,
@@ -98,17 +103,17 @@ async function accelerateNextFollowUp(
 ): Promise<boolean> {
   const { data: next } = await supabase
     .from("emails")
-    .select("id, scheduled_at, sequence_step")
+    .select("id, scheduled_at, sequence_step, accelerated_at")
     .eq("lead_id", leadId)
     .eq("campaign_id", campaignId)
     .eq("status", "pending")
     .gt("sequence_step", 1)
-    .is("accelerated_at", null)
     .order("sequence_step", { ascending: true })
     .limit(1);
 
   const followUp = next && next[0];
   if (!followUp) return false;
+  if (followUp.accelerated_at) return false; // the next follow-up is already moved up — wait for it to send
 
   if (followUp.scheduled_at && new Date(followUp.scheduled_at) <= target) return false; // already sooner
 
@@ -121,7 +126,8 @@ async function accelerateNextFollowUp(
       trigger_condition: { trigger, send_at: target.toISOString(), previous_scheduled_at: followUp.scheduled_at, at: new Date().toISOString() },
     })
     .eq("id", followUp.id)
-    .eq("status", "pending");
+    .eq("status", "pending")
+    .is("accelerated_at", null); // two near-simultaneous events can't both move it
 
   if (error) {
     logger.warn({ error: error.message, emailId: followUp.id }, "Failed to accelerate follow-up");
