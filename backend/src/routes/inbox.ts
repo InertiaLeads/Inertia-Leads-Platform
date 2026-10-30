@@ -20,6 +20,20 @@ function safeSearchTerm(q: string): string {
   return q.replace(/[,()%\\"']/g, " ").trim().slice(0, 80);
 }
 
+// Follow-ups (step 2+) still waiting to go out for this lead in this campaign.
+// The Inbox hides the out-of-office resume date when this is 0 — there is nothing left to move.
+async function countPendingFollowUps(userId: string, leadId: string, campaignId: string): Promise<number> {
+  const { count } = await supabase
+    .from("emails")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .eq("lead_id", leadId)
+    .eq("campaign_id", campaignId)
+    .eq("status", "pending")
+    .gt("sequence_step", 1);
+  return count || 0;
+}
+
 // GET /api/inbox — paginated reply list with filters
 //   ?filter=all|unread|archived  ?classification=<cat|unclassified>  ?campaignId=  ?q=  ?page=  ?limit=
 router.get("/", authMiddleware, gate, async (req: AuthenticatedRequest, res) => {
@@ -138,7 +152,7 @@ router.get("/:id/thread", authMiddleware, gate, async (req: AuthenticatedRequest
       .single();
     if (!reply) { res.status(404).json({ error: "Reply not found" }); return; }
 
-    const [{ data: lead }, { data: campaign }, { data: sentEmails }, { data: messages }] = await Promise.all([
+    const [{ data: lead }, { data: campaign }, { data: sentEmails }, { data: messages }, pendingFollowUps] = await Promise.all([
       supabase.from("leads").select("id, name, company, email, phone, website, industry, score, enriched_data, detected_language").eq("id", reply.lead_id).single(),
       supabase.from("campaigns").select("id, name, status").eq("id", reply.campaign_id).single(),
       supabase
@@ -155,6 +169,7 @@ router.get("/:id/thread", authMiddleware, gate, async (req: AuthenticatedRequest
         .eq("campaign_id", reply.campaign_id)
         .eq("user_id", req.userId)
         .order("received_at", { ascending: true }),
+      countPendingFollowUps(req.userId!, reply.lead_id, reply.campaign_id),
     ]);
 
     // Strip audit_token etc. — the UI only needs a light lead summary
@@ -171,6 +186,7 @@ router.get("/:id/thread", authMiddleware, gate, async (req: AuthenticatedRequest
       campaign,
       sentEmails: (sentEmails || []).filter((e: any) => e.status === "sent"),
       messages: messages || [],
+      pendingFollowUps,
     });
   } catch (err) {
     logger.error({ err }, "Inbox thread error");
@@ -242,7 +258,9 @@ router.put("/:id/classification", authMiddleware, gate, async (req: Authenticate
       }, previous);
     }
     auditLog({ userId: req.userId, action: "inbox.classify", resource: "replies", resourceId: id, req, metadata: { from: previous, to: classification } });
-    res.json({ success: true, classification });
+    // Most labels cancel the remaining follow-ups — send the fresh count so the UI stays in sync
+    const pendingFollowUps = await countPendingFollowUps(req.userId!, reply.lead_id, reply.campaign_id);
+    res.json({ success: true, classification, pendingFollowUps });
   } catch (err) {
     logger.error({ err }, "Classification override failed");
     res.status(500).json({ error: "Failed to update classification" });
