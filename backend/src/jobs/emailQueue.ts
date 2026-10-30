@@ -492,12 +492,15 @@ async function processEmailQueue() {
               }
 
               // Gate: previous step must have been sent at least 2 days ago.
-              // Bypassed for follow-ups a smart-sequence trigger deliberately pulled forward
-              // (accelerated_at set) — their scheduled_at already encodes the intended timing.
-              if (prevEmail.sent_at && !followUp.accelerated_at) {
+              // A follow-up a smart-sequence trigger deliberately pulled forward (accelerated_at set)
+              // uses a shorter 12-hour gap instead: its scheduled_at already encodes the intended
+              // "next morning" timing, but it must never go out the same day as the previous email
+              // (safety net so two follow-ups can't be sent one minute apart).
+              if (prevEmail.sent_at) {
                 const sentAt = new Date(prevEmail.sent_at);
                 const hoursSincePrev = (Date.now() - sentAt.getTime()) / (1000 * 60 * 60);
-                if (hoursSincePrev < 48) {
+                const minGapHours = followUp.accelerated_at ? 12 : 48;
+                if (hoursSincePrev < minGapHours) {
                   // Not enough time since previous step — skip for now, don't cancel
                   logger.debug({ emailId: followUp.id, hoursSincePrev: Math.round(hoursSincePrev) }, "Skipping follow-up — too soon after previous step");
                   continue;
