@@ -67,6 +67,7 @@ interface Thread {
   campaign: { id: string; name: string; status: string } | null;
   sentEmails: SentEmail[];
   messages: ThreadMessage[];
+  pendingFollowUps?: number;
 }
 
 const CLASS_META: Record<Classification | "unclassified", { label: string; color: string; bg: string; ring: string; dot: string }> = {
@@ -241,11 +242,12 @@ export default function InboxPage() {
 
   const changeClassification = async (id: string, classification: Classification) => {
     try {
-      await apiPut(`/inbox/${id}/classification`, { classification });
+      const res = await apiPut<{ pendingFollowUps?: number }>(`/inbox/${id}/classification`, { classification });
       setReplies((prev) => prev.map((r) => (r.id === id ? { ...r, classification, classified_by: "user" } : r)));
       if (thread && thread.reply.id === id) {
         setThread({
           ...thread,
+          pendingFollowUps: res?.pendingFollowUps ?? thread.pendingFollowUps,
           reply: { ...thread.reply, classification },
           messages: thread.messages.map((m) => (m.id === id ? { ...m, classification, classified_by: "user", classification_reason: "Set manually" } : m)),
         });
@@ -330,8 +332,15 @@ export default function InboxPage() {
         </div>
         <div className="relative z-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white">Inbox</h1>
-            <p className="mt-1 text-sm" style={{ color: "rgba(255,255,255,0.5)" }}>Replies from your leads, matched to their campaign and sorted by AI. New replies appear within a few minutes.</p>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
+                <svg className="w-5 h-5" style={{ color: "#c4b5fd" }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-3.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 007.586 13H4" />
+                </svg>
+              </div>
+              <h1 className="text-2xl md:text-3xl font-bold text-white">Inbox</h1>
+            </div>
+            <p className="mt-2 text-sm" style={{ color: "rgba(255,255,255,0.5)" }}>Replies from your leads, matched to their campaign and sorted by AI. New replies appear within a few minutes.</p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {(["all", "unread"] as const).map((f) => (
@@ -508,7 +517,12 @@ export default function InboxPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {thread.reply.classification === "out_of_office" && (
+                  {thread.reply.classification === "out_of_office" && thread.pendingFollowUps === 0 && (
+                    <span className="text-[11px] font-semibold px-2 py-1 rounded-md whitespace-nowrap" style={{ background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.6)" }} title="All follow-ups have been sent or stopped — nothing left to reschedule">
+                      No follow-ups left
+                    </span>
+                  )}
+                  {thread.reply.classification === "out_of_office" && thread.pendingFollowUps !== 0 && (
                     <>
                       <span className="text-[11px] font-semibold px-2 py-1 rounded-md whitespace-nowrap" style={{ background: "rgba(245,158,11,0.18)", color: "#fcd34d" }} title={thread.reply.ooo_return_date ? "Follow-ups resume on the day the lead is back" : "No return date detected — follow-ups keep their normal schedule"}>
                         {thread.reply.ooo_return_date
